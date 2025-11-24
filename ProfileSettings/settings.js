@@ -15,10 +15,12 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCirclePlus } from '@fortawesome/free-solid-svg-icons';
 import Bar from '../MoreStuff/bar';
+import { useAppContext, ROLE_CONFIG } from '../context/AppContext';
 
-export default function Settings({ Name, Birth, ProfileImage: initialProfileImage }) {
+export default function Settings() {
   const [modalVisible, setModalVisible] = useState(false);
-  const [profileImage, setProfileImage] = useState(initialProfileImage || null);
+  const { user, role, switchRole } = useAppContext();
+  const [profileImage, setProfileImage] = useState(null);
   const insets = useSafeAreaInsets();
 
   // Request permission
@@ -95,7 +97,7 @@ export default function Settings({ Name, Birth, ProfileImage: initialProfileImag
                 source={
                   profileImage
                     ? { uri: profileImage }
-                    : { uri: 'https://via.placeholder.com/140' }
+                    : require('../assets/profile.png')
                 }
                 style={styles.profileImage}
               />
@@ -106,10 +108,32 @@ export default function Settings({ Name, Birth, ProfileImage: initialProfileImag
           </View>
 
           <View style={styles.infoContainer}>
-            <Text style={styles.nameText}>{Name}</Text>
+            <Text style={styles.nameText}>{user.name}</Text>
             <Text style={styles.birthText}>
-              Birth: {Birth} ({calculateAge(Birth)} years)
+              Account ID: {user.id}
             </Text>
+            {user.birthYear ? (
+              <Text style={styles.birthText}>
+                Birth year: {user.birthYear} ({calculateAge(user.birthYear)} yrs)
+              </Text>
+            ) : null}
+            <Text style={styles.contactText}>{user.email}</Text>
+            <Text style={styles.contactText}>{user.phone}</Text>
+          </View>
+        </View>
+
+        <View style={styles.roleSection}>
+          <Text style={styles.roleLabel}>Active role: {ROLE_CONFIG[role].label}</Text>
+          <View style={styles.roleChips}>
+            {Object.keys(ROLE_CONFIG).map((key) => (
+              <TouchableOpacity
+                key={key}
+                style={[styles.roleChip, role === key && styles.roleChipActive]}
+                onPress={() => switchRole(key)}
+              >
+                <Text style={[styles.roleChipText, role === key && styles.roleChipTextActive]}>{ROLE_CONFIG[key].label}</Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </View>
       </ScrollView>
@@ -175,4 +199,19 @@ const styles = StyleSheet.create({
   modalButtons: { flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
   modalButton: { flex: 1, backgroundColor: '#4A90E2', paddingVertical: 10, marginHorizontal: 5, borderRadius: 10, alignItems: 'center' },
   modalButtonText: { color: '#fff', fontWeight: 'bold' },
+  roleSection: { marginTop: 30 },
+  roleLabel: { fontSize: 16, fontWeight: '600', marginBottom: 12 },
+  roleChips: { flexDirection: 'row', flexWrap: 'wrap' },
+  roleChip: {
+    borderWidth: 1,
+    borderColor: '#4A90E2',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  roleChipActive: { backgroundColor: '#4A90E2' },
+  roleChipText: { color: '#4A90E2', fontWeight: '600' },
+  roleChipTextActive: { color: '#fff' },
 });

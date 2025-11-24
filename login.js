@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
 View,
 Text,
@@ -11,49 +11,49 @@ Platform,
 ScrollView,
 ImageBackground,
 Image,
+Alert,
 } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
+import { useAppContext, ROLE_CONFIG } from './context/AppContext';
 
-const LoginScreen = ({
-onLogin,
-onGoogleLogin,
-onFacebookLogin,
-onAppleLogin,
-onSignUp
-}) => {
+const LoginScreen = () => {
 const [username, setUsername] = useState('');
 const [password, setPassword] = useState('');
+const [selectedRole, setSelectedRole] = useState('user');
 const [fbImgError, setFbImgError] = useState(false);
 const [appleImgError, setAppleImgError] = useState(false);
 const [googleImgError, setGoogleImgError] = useState(false);
+const navigation = useNavigation();
+const { signIn, switchRole } = useAppContext();
+const roleKeys = useMemo(() => Object.keys(ROLE_CONFIG), []);
 
 const handleLogin = () => {
-if (onLogin) {
-onLogin({ username, password });
+if (!username.trim() || !password.trim()) {
+Alert.alert('Missing details', 'Enter both username and password.');
+return;
 }
+signIn({ name: username, email: `${username.replace(/\s/g, '').toLowerCase()}@swiftsend.app` });
+switchRole(selectedRole);
+navigation.reset({
+index: 0,
+routes: [{ name: 'Main' }],
+});
 };
 
 const handleGoogleLogin = () => {
-if (onGoogleLogin) {
-onGoogleLogin();
-}
+Alert.alert('Google login', 'Google login is stubbed for now.');
 };
 
 const handleFacebookLogin = () => {
-if (onFacebookLogin) {
-onFacebookLogin();
-}
+Alert.alert('Facebook login', 'Facebook login is stubbed for now.');
 };
 
 const handleAppleLogin = () => {
-if (onAppleLogin) {
-onAppleLogin();
-}
+Alert.alert('Apple login', 'Apple login is stubbed for now.');
 };
 
 const handleSignUp = () => {
-if (onSignUp) {
-onSignUp();
-}
+Alert.alert('Sign up', 'Use the form above to create a profile instantly.');
 };
 
 return (
@@ -75,7 +75,23 @@ showsVerticalScrollIndicator={false}
 <View style={styles.formContainer}>
 <Text style={styles.title}>Login</Text>
 
-          {}
+          <View style={styles.roleContainer}>
+            <Text style={styles.roleLabel}>Choose your role:</Text>
+            <View style={styles.roleSelector}>
+              {roleKeys.map((role) => (
+                <TouchableOpacity
+                  key={role}
+                  style={[styles.roleChip, selectedRole === role && styles.roleChipActive]}
+                  onPress={() => setSelectedRole(role)}
+                >
+                  <Text style={[styles.roleChipText, selectedRole === role && styles.roleChipTextActive]}>
+                    {ROLE_CONFIG[role].label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
           <TextInput
             style={styles.input}
             placeholder="UserName:"
@@ -328,6 +344,41 @@ signUpLink: {
 fontSize: 14,
 color: '#4A90E2',
 fontWeight: '600',
+},
+roleContainer: {
+width: '100%',
+marginBottom: 20,
+},
+roleLabel: {
+fontSize: 14,
+color: '#4A90E2',
+marginBottom: 8,
+fontWeight: '600',
+alignSelf: 'flex-start',
+},
+roleSelector: {
+flexDirection: 'row',
+flexWrap: 'wrap',
+justifyContent: 'center',
+},
+roleChip: {
+paddingVertical: 8,
+paddingHorizontal: 12,
+borderRadius: 20,
+borderWidth: 1,
+borderColor: '#4A90E2',
+margin: 4,
+},
+roleChipActive: {
+backgroundColor: '#4A90E2',
+},
+roleChipText: {
+color: '#4A90E2',
+fontSize: 13,
+fontWeight: '600',
+},
+roleChipTextActive: {
+color: '#fff',
 },
 });
 
