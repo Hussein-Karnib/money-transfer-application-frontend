@@ -2,27 +2,33 @@ import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppContext } from '../context/AppContext';
+import Header from './header';
+import Bar from '../MoreStuff/bar';
 
 const Notifications = () => {
   const { notifications } = useAppContext();
+  const image = require('../assets/profile.png');
 
   return (
-    <ScrollView style={styles.container}>
-      <SafeAreaView>
+    <SafeAreaView style={styles.container}>
+      <Header image={image} transaction={notifications.length} />
+      <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>Notifications</Text>
-        {notifications.map((note, index) => (
+        {notifications.map((note) => (
           <View key={note} style={styles.notificationCard}>
             <Text style={styles.notificationText}>{note}</Text>
           </View>
         ))}
         {notifications.length === 0 && <Text style={styles.emptyText}>All caught up!</Text>}
-      </SafeAreaView>
-    </ScrollView>
+      </ScrollView>
+      <Bar />
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 16, backgroundColor: '#fff' },
+  container: { flex: 1, backgroundColor: '#fff' },
+  scrollContent: { padding: 16, paddingBottom: 70 },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 16 },
   notificationCard: {
     padding: 16,

@@ -39,12 +39,32 @@ export const ROLE_CONFIG = {
   },
 };
 
+const FX_RATES = {
+  USD: 1,
+  EUR: 1.09,
+  GBP: 1.27,
+  KES: 0.0076,
+  PHP: 0.0176,
+};
+
+const CURRENCY_SYMBOLS = {
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  KES: 'KES ',
+  PHP: '₱',
+};
+
+const TRANSFER_FEE_PERCENT = 0.0125;
+
 const INITIAL_TRANSACTIONS = [
   {
     id: 'TX-202501-0001',
     type: 'received',
     counterpart: 'FinPay Payroll',
     amount: 1500,
+    currency: 'USD',
+    fxRate: FX_RATES.USD,
     note: 'Monthly Salary',
     timestamp: '2025-10-15T10:00:00.000Z',
   },
@@ -53,6 +73,8 @@ const INITIAL_TRANSACTIONS = [
     type: 'sent',
     counterpart: 'Jamie Lee',
     amount: 120,
+    currency: 'USD',
+    fxRate: FX_RATES.USD,
     note: 'Dinner refund',
     timestamp: '2025-10-18T18:45:00.000Z',
   },
@@ -61,6 +83,8 @@ const INITIAL_TRANSACTIONS = [
     type: 'received',
     counterpart: 'Tasha Bank',
     amount: 300,
+    currency: 'USD',
+    fxRate: FX_RATES.USD,
     note: 'Cashback bonus',
     timestamp: '2025-10-20T08:20:00.000Z',
   },
@@ -134,6 +158,23 @@ export const AppProvider = ({ children }) => {
   const [beneficiaries, setBeneficiaries] = useState(MOCK_BENEFICIARIES);
   const [agents, setAgents] = useState(MOCK_AGENTS);
 
+  const getFxRate = useCallback((currency) => FX_RATES[currency] || 1, []);
+
+  const convertToBase = useCallback(
+    (amount, currency = 'USD') => {
+      const numeric = Number(amount);
+      if (Number.isNaN(numeric)) return 0;
+      return numeric * getFxRate(currency);
+    },
+    [getFxRate],
+  );
+
+  const formatCurrency = useCallback((amount, currency = 'USD') => {
+    const numeric = Number(amount) || 0;
+    const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
+    return `${symbol}${numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }, []);
+
   const appendNotification = useCallback((message) => {
     setNotifications((prev) => [message, ...prev].slice(0, 25));
   }, []);
@@ -148,7 +189,7 @@ export const AppProvider = ({ children }) => {
   }, []);
 
   const sendMoney = useCallback(
-    ({ counterpart, amount, note }) => {
+    ({ counterpart, amount, note, currency = 'USD' }) => {
       const numericAmount = Number(amount);
       if (!counterpart?.trim()) {
         throw new Error('Recipient information is required');
@@ -159,49 +200,67 @@ export const AppProvider = ({ children }) => {
       if (numericAmount <= 0) {
         throw new Error('Amount must be greater than zero');
       }
-      if (numericAmount > balance) {
-        throw new Error('Insufficient balance');
+      const fxRate = getFxRate(currency);
+      const amountInBase = numericAmount * fxRate;
+      const fee = amountInBase * TRANSFER_FEE_PERCENT;
+      const totalDebit = amountInBase + fee;
+      if (totalDebit > balance) {
+        throw new Error('Insufficient balance after fees');
       }
 
       const transaction = buildTransaction({
         type: 'sent',
         counterpart: counterpart.trim(),
         amount: numericAmount,
+        baseAmount: amountInBase,
+        currency,
+        fxRate,
+        fee,
         note: note?.trim() || '',
         timestamp: new Date().toISOString(),
       });
 
-      setBalance((prev) => prev - numericAmount);
+      setBalance((prev) => prev - totalDebit);
       setTransactions((prev) => [transaction, ...prev]);
-      appendNotification(`You sent $${numericAmount.toFixed(2)} to ${transaction.counterpart}`);
+      appendNotification(
+        `You sent ${formatCurrency(numericAmount, currency)} to ${transaction.counterpart} (fee ${formatCurrency(
+          fee,
+          'USD',
+        )})`,
+      );
 
       return transaction;
     },
-    [appendNotification, balance, buildTransaction],
+    [appendNotification, balance, buildTransaction, formatCurrency, getFxRate],
   );
 
   const receiveMoney = useCallback(
-    ({ counterpart, amount, note }) => {
+    ({ counterpart, amount, note, currency = 'USD' }) => {
       const numericAmount = Number(amount);
       if (Number.isNaN(numericAmount) || numericAmount <= 0) {
         throw new Error('Amount must be greater than zero');
       }
+      const fxRate = getFxRate(currency);
+      const amountInBase = numericAmount * fxRate;
 
       const transaction = buildTransaction({
         type: 'received',
         counterpart: counterpart?.trim() || 'Unknown Sender',
         amount: numericAmount,
+        baseAmount: amountInBase,
+        currency,
+        fxRate,
         note: note?.trim() || '',
         timestamp: new Date().toISOString(),
       });
 
-      setBalance((prev) => prev + numericAmount);
+      setBalance((prev) => prev + amountInBase);
       setTransactions((prev) => [transaction, ...prev]);
-      appendNotification(`You received $${numericAmount.toFixed(2)} from ${transaction.counterpart}`);
+      appendNotification(`You received ${formatCurrency(numericAmount, currency)} from ${transaction.counterpart}`);
 
       return transaction;
     },
-    [appendNotification, buildTransaction],
+    [appendNotification, buildTransaction, formatCurrency, getFxRate],
   );
 
   const requestMoney = useCallback(
@@ -295,6 +354,10 @@ export const AppProvider = ({ children }) => {
       services,
       beneficiaries,
       agents,
+      fxRates: FX_RATES,
+      transferFeePercent: TRANSFER_FEE_PERCENT,
+      formatCurrency,
+      convertToBase,
       sendMoney,
       receiveMoney,
       requestMoney,
@@ -323,6 +386,8 @@ export const AppProvider = ({ children }) => {
       addBeneficiary,
       switchRole,
       updateAgentStatus,
+      convertToBase,
+      formatCurrency,
     ],
   );
 

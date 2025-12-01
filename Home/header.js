@@ -12,11 +12,15 @@ const Header = ({ image, transaction }) => {
   const roleLabel = ROLE_CONFIG[role]?.label || 'User';
 
   const handleBell = () => {
+    if (!navigation) {
+      return;
+    }
+
     if (Platform.OS === 'web') {
       console.log('Web popup behavior');
-    } else {
-      navigation.navigate('Notifications');
     }
+
+    navigation.navigate('Notifications');
   };
 
   return (

@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
+import AppScreen from '../components/AppScreen';
 
 const BeneficiariesScreen = () => {
   const { beneficiaries, addBeneficiary } = useAppContext();
@@ -26,8 +27,7 @@ const BeneficiariesScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Beneficiaries</Text>
         <Text style={styles.subtitle}>
           Verified recipients: {verifiedCount}/{beneficiaries.length}
@@ -59,14 +59,12 @@ const BeneficiariesScreen = () => {
             </View>
           </View>
         ))}
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb' },
-  container: { padding: 20, paddingBottom: 60 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 26, fontWeight: '700', color: '#0f172a' },
   subtitle: { color: '#475467', marginBottom: 20 },
   form: {

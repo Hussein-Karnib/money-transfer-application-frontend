@@ -8,7 +8,7 @@ import { useNavigation } from '@react-navigation/native';
 
 const Home = () => {
   const image = require('../assets/profile.png');
-  const { user, balance, transactions, notifications } = useAppContext();
+  const { user, balance, transactions, notifications, formatCurrency } = useAppContext();
   const navigation = useNavigation();
 
   const recentTransactions = transactions.slice(0, 3);
@@ -55,7 +55,8 @@ const Home = () => {
                   <Text style={styles.transactionNote}>{item.note || 'No note provided'}</Text>
                 </View>
                 <Text style={[styles.transactionAmount, item.type === 'sent' ? styles.sent : styles.received]}>
-                  {item.type === 'sent' ? '-' : '+'}${item.amount.toFixed(2)}
+                  {item.type === 'sent' ? '-' : '+'}
+                  {formatCurrency(item.amount, item.currency || 'USD')}
                 </Text>
               </View>
             ))}

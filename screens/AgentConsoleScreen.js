@@ -1,6 +1,7 @@
 import React from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
+import AppScreen from '../components/AppScreen';
 
 const AgentConsoleScreen = () => {
   const { agents, updateAgentStatus } = useAppContext();
@@ -11,8 +12,7 @@ const AgentConsoleScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Agent Console</Text>
         <Text style={styles.subtitle}>Manage cash operations, queue, and working hours.</Text>
 
@@ -37,14 +37,12 @@ const AgentConsoleScreen = () => {
           <Text style={styles.queueItem}>• 1 high-value transfer requires ID verification</Text>
           <Text style={styles.queueItem}>• Settlements batch scheduled for 6pm</Text>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb' },
-  container: { padding: 20, paddingBottom: 60 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 28, fontWeight: '700', color: '#0f172a' },
   subtitle: { color: '#475467', marginBottom: 20 },
   card: {

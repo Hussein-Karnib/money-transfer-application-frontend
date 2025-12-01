@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
 import { validateEmail } from '../utils/validation';
+import AppScreen from '../components/AppScreen';
 
 const FAQ = [
   {
@@ -39,8 +40,7 @@ const SupportScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Support & Contact</Text>
         <Text style={styles.subtitle}>Need help? Reach out via the form or browse the FAQ below.</Text>
 
@@ -77,14 +77,12 @@ const SupportScreen = () => {
             </View>
           ))}
         </View>
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb' },
-  container: { padding: 20, paddingBottom: 80 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 28, fontWeight: '700', color: '#101828' },
   subtitle: { fontSize: 15, color: '#475467', marginBottom: 20 },
   formCard: {

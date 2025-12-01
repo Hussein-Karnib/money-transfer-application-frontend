@@ -1,13 +1,13 @@
 import React from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
+import AppScreen from '../components/AppScreen';
 
 const AgentMapScreen = () => {
   const { agents } = useAppContext();
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Agent Locations</Text>
         <Text style={styles.subtitle}>Explore partner stores on the map and check availability.</Text>
 
@@ -27,14 +27,12 @@ const AgentMapScreen = () => {
             </View>
           </View>
         ))}
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb' },
-  container: { padding: 20, paddingBottom: 60 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 26, fontWeight: '700', color: '#0f172a' },
   subtitle: { color: '#475467', marginBottom: 20 },
   mapPlaceholder: {

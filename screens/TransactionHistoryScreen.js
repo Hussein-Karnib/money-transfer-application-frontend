@@ -1,11 +1,12 @@
 import React, { useMemo, useState } from 'react';
-import { FlatList, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
+import AppScreen from '../components/AppScreen';
 
 const FILTERS = ['all', 'sent', 'received'];
 
 const TransactionHistoryScreen = () => {
-  const { transactions } = useAppContext();
+  const { transactions, formatCurrency } = useAppContext();
   const [activeFilter, setActiveFilter] = useState('all');
 
   const filteredTransactions = useMemo(() => {
@@ -21,13 +22,14 @@ const TransactionHistoryScreen = () => {
         <Text style={styles.timestamp}>{new Date(item.timestamp).toLocaleString()}</Text>
       </View>
       <Text style={[styles.amount, item.type === 'sent' ? styles.sent : styles.received]}>
-        {item.type === 'sent' ? '-' : '+'}${item.amount.toFixed(2)}
+        {item.type === 'sent' ? '-' : '+'}
+        {formatCurrency(item.amount, item.currency || 'USD')}
       </Text>
     </View>
   );
 
   return (
-    <SafeAreaView style={styles.screen}>
+    <AppScreen bodyStyle={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Transaction History</Text>
         <Text style={styles.subtitle}>Filter by type to quickly skim your activity.</Text>
@@ -52,12 +54,12 @@ const TransactionHistoryScreen = () => {
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={<Text style={styles.emptyState}>No transactions yet.</Text>}
       />
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb', paddingHorizontal: 16 },
+  container: { paddingHorizontal: 16, paddingBottom: 40 },
   header: { paddingVertical: 20 },
   title: { fontSize: 28, fontWeight: '700', color: '#101828' },
   subtitle: { fontSize: 14, color: '#475467', marginTop: 4 },

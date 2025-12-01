@@ -52,6 +52,14 @@ const drawerScreensByRole = {
 const RoleAwareDrawer = () => {
   const { role } = useAppContext();
   const screens = drawerScreensByRole[role] || drawerScreensByRole.user;
+  const enhancedScreens = [
+    ...screens,
+    {
+      name: 'Notifications',
+      component: Notifications,
+      options: { drawerItemStyle: { display: 'none' } },
+    },
+  ];
 
   return (
     <Drawer.Navigator
@@ -60,9 +68,10 @@ const RoleAwareDrawer = () => {
         headerStyle: { backgroundColor: '#4A90E2' },
         headerTintColor: '#fff',
         sceneContainerStyle: { backgroundColor: '#f5f7fb' },
+        headerShown: false,
       }}
     >
-      {screens.map(({ name, component, options }) => (
+      {enhancedScreens.map(({ name, component, options }) => (
         <Drawer.Screen key={name} name={name} component={component} options={options} />
       ))}
     </Drawer.Navigator>

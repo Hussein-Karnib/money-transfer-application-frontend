@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
 import { validateAmount } from '../utils/validation';
+import AppScreen from '../components/AppScreen';
 
 const ReceiveMoneyScreen = () => {
   const { user, receiveMoney, requestMoney } = useAppContext();
@@ -44,8 +45,7 @@ const ReceiveMoneyScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Receive Money</Text>
         <Text style={styles.subtitle}>Share your personal ID or QR code below.</Text>
 
@@ -115,14 +115,12 @@ const ReceiveMoneyScreen = () => {
             <Text style={styles.secondaryButtonText}>Send request</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 20, paddingBottom: 60 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 28, fontWeight: '700', color: '#101828' },
   subtitle: { fontSize: 15, color: '#475467', marginBottom: 20 },
   card: {

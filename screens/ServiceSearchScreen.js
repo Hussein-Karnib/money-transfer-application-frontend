@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
+import AppScreen from '../components/AppScreen';
 
 const ServiceSearchScreen = () => {
   const { services } = useAppContext();
@@ -19,8 +20,7 @@ const ServiceSearchScreen = () => {
   }, [destination, payout, services, speed]);
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Find Transfer Services</Text>
         <Text style={styles.subtitle}>
           Filter by destination, fee, payout method, or promotions to choose the best corridor.
@@ -64,14 +64,12 @@ const ServiceSearchScreen = () => {
         ))}
 
         {filteredServices.length === 0 && <Text style={styles.empty}>No services match the filters yet.</Text>}
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb' },
-  container: { padding: 20, paddingBottom: 60 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 26, fontWeight: '700', color: '#101828' },
   subtitle: { fontSize: 14, color: '#475467', marginBottom: 20 },
   filters: { marginBottom: 20 },

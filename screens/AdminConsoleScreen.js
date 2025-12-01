@@ -1,13 +1,13 @@
 import React from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useAppContext } from '../context/AppContext';
+import AppScreen from '../components/AppScreen';
 
 const AdminConsoleScreen = () => {
   const { agents, supportTickets } = useAppContext();
 
   return (
-    <SafeAreaView style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.container}>
+    <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Admin Operations</Text>
         <Text style={styles.subtitle}>Monitor platform health, approvals, and compliance indicators.</Text>
 
@@ -40,14 +40,12 @@ const AdminConsoleScreen = () => {
           <Text style={styles.alertItem}>• Remind users about updated AML guidelines</Text>
           <Text style={styles.alertItem}>• Review large transfers flagged on 21 Oct</Text>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+    </AppScreen>
   );
 };
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#f5f7fb' },
-  container: { padding: 20, paddingBottom: 60 },
+  container: { paddingBottom: 40 },
   title: { fontSize: 28, fontWeight: '700', color: '#0f172a' },
   subtitle: { color: '#475467', marginBottom: 20 },
   metricsRow: { flexDirection: 'row', marginBottom: 16 },
