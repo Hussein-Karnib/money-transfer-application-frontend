@@ -14,8 +14,8 @@ const Notifications = () => {
       <Header image={image} transaction={notifications.length} />
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>Notifications</Text>
-        {notifications.map((note) => (
-          <View key={note} style={styles.notificationCard}>
+        {notifications.map((note, index) => (
+          <View key={index} style={styles.notificationCard}>
             <Text style={styles.notificationText}>{note}</Text>
           </View>
         ))}
