@@ -33,6 +33,10 @@ const SendMoneyScreen = () => {
       <ScrollView contentContainerStyle={styles.container}>
         <Text style={styles.title}>Send Money</Text>
         <Text style={styles.subtitle}>Current balance: ${balance.toLocaleString()}</Text>
+        <View style={styles.securityBanner}>
+          <Text style={styles.securityTitle}>Protected transfer</Text>
+          <Text style={styles.securityText}>Sensitive details are validated and encrypted before posting.</Text>
+        </View>
 
         <View style={styles.formGroup}>
           <Text style={styles.label}>Recipient ID / Phone / Email</Text>
@@ -69,7 +73,11 @@ const SendMoneyScreen = () => {
           />
         </View>
 
-        <TouchableOpacity style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]} disabled={!canSubmit} onPress={handleSubmit}>
+        <TouchableOpacity
+          style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
+          disabled={!canSubmit}
+          onPress={handleSubmit}
+        >
           <Text style={styles.submitText}>Confirm transfer</Text>
         </TouchableOpacity>
 
@@ -91,7 +99,17 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f5f7fb' },
   container: { padding: 20, paddingBottom: 80 },
   title: { fontSize: 28, fontWeight: '700', marginBottom: 6, color: '#101828' },
-  subtitle: { fontSize: 16, color: '#475467', marginBottom: 20 },
+  subtitle: { fontSize: 16, color: '#475467', marginBottom: 12 },
+  securityBanner: {
+    backgroundColor: '#ecfeff',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#cffafe',
+    marginBottom: 16,
+  },
+  securityTitle: { fontWeight: '700', color: '#0f172a' },
+  securityText: { color: '#0f172a', marginTop: 4 },
   formGroup: { marginBottom: 16 },
   label: { fontSize: 14, fontWeight: '600', color: '#344054', marginBottom: 6 },
   input: {
@@ -131,4 +149,3 @@ const styles = StyleSheet.create({
 });
 
 export default SendMoneyScreen;
-
