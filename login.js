@@ -1,385 +1,356 @@
 import React, { useMemo, useState } from 'react';
 import {
-View,
-Text,
-TextInput,
-TouchableOpacity,
-StyleSheet,
-SafeAreaView,
-KeyboardAvoidingView,
-Platform,
-ScrollView,
-ImageBackground,
-Image,
-Alert,
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  ImageBackground,
+  Image,
+  Alert,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useAppContext, ROLE_CONFIG } from './context/AppContext';
+import { validateEmail, validatePhone } from './utils/validation';
+
+const MODE = {
+  LOGIN: 'login',
+  SIGNUP: 'signup',
+};
 
 const LoginScreen = () => {
-const [username, setUsername] = useState('');
-const [password, setPassword] = useState('');
-const [selectedRole, setSelectedRole] = useState('user');
-const [fbImgError, setFbImgError] = useState(false);
-const [appleImgError, setAppleImgError] = useState(false);
-const [googleImgError, setGoogleImgError] = useState(false);
-const navigation = useNavigation();
-const { signIn, switchRole } = useAppContext();
-const roleKeys = useMemo(() => Object.keys(ROLE_CONFIG), []);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [mode, setMode] = useState(MODE.LOGIN);
+  const [selectedRole, setSelectedRole] = useState('user');
+  const navigation = useNavigation();
+  const { signIn, switchRole } = useAppContext();
+  const roleKeys = useMemo(() => Object.keys(ROLE_CONFIG), []);
 
-const handleLogin = () => {
-if (!username.trim() || !password.trim()) {
-Alert.alert('Missing details', 'Enter both username and password.');
-return;
-}
-signIn({ name: username, email: `${username.replace(/\s/g, '').toLowerCase()}@swiftsend.app` });
-switchRole(selectedRole);
-navigation.reset({
-index: 0,
-routes: [{ name: 'Main' }],
-});
-};
+  const formValid = useMemo(() => {
+    if (mode === MODE.LOGIN) {
+      return username.trim().length > 0 && password.trim().length >= 6;
+    }
 
-const handleGoogleLogin = () => {
-Alert.alert('Google login', 'Google login is stubbed for now.');
-};
+    return (
+      fullName.trim().length > 2 &&
+      validateEmail(email) &&
+      validatePhone(phone) &&
+      password.trim().length >= 8
+    );
+  }, [email, fullName, mode, password, phone, username]);
 
-const handleFacebookLogin = () => {
-Alert.alert('Facebook login', 'Facebook login is stubbed for now.');
-};
+  const handleLogin = () => {
+    if (!formValid) {
+      Alert.alert('Missing details', 'Please fill out all required fields.');
+      return;
+    }
 
-const handleAppleLogin = () => {
-Alert.alert('Apple login', 'Apple login is stubbed for now.');
-};
+    if (mode === MODE.LOGIN) {
+      signIn({ name: username.trim(), email: `${username.replace(/\s/g, '').toLowerCase()}@swiftsend.app` });
+    } else {
+      signIn({ name: fullName.trim(), email: email.trim() });
+    }
+    switchRole(selectedRole);
+    navigation.reset({
+      index: 0,
+      routes: [{ name: 'Main' }],
+    });
+  };
 
-const handleSignUp = () => {
-Alert.alert('Sign up', 'Use the form above to create a profile instantly.');
-};
+  const handleRecovery = () => {
+    Alert.alert('Password recovery', 'We sent recovery instructions to your email and phone.');
+  };
 
-return (
-<ImageBackground
-source={require('./assets/background.png')}
-style={styles.backgroundImage}
-resizeMode="cover"
->
-<SafeAreaView style={styles.container}>
-<KeyboardAvoidingView
-behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-style={styles.keyboardView}
->
-<ScrollView
-contentContainerStyle={styles.scrollContent}
-showsVerticalScrollIndicator={false}
->
-{}
-<View style={styles.formContainer}>
-<Text style={styles.title}>Login</Text>
+  const renderRoleSelector = () => (
+    <View style={styles.roleContainer}>
+      <Text style={styles.roleLabel}>Choose your role</Text>
+      <View style={styles.roleSelector}>
+        {roleKeys.map((role) => (
+          <TouchableOpacity
+            key={role}
+            style={[styles.roleChip, selectedRole === role && styles.roleChipActive]}
+            onPress={() => setSelectedRole(role)}
+          >
+            <Text style={[styles.roleChipText, selectedRole === role && styles.roleChipTextActive]}>
+              {ROLE_CONFIG[role].label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  );
 
-          <View style={styles.roleContainer}>
-            <Text style={styles.roleLabel}>Choose your role:</Text>
-            <View style={styles.roleSelector}>
-              {roleKeys.map((role) => (
-                <TouchableOpacity
-                  key={role}
-                  style={[styles.roleChip, selectedRole === role && styles.roleChipActive]}
-                  onPress={() => setSelectedRole(role)}
-                >
-                  <Text style={[styles.roleChipText, selectedRole === role && styles.roleChipTextActive]}>
-                    {ROLE_CONFIG[role].label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+  return (
+    <ImageBackground source={require('./assets/background.png')} style={styles.backgroundImage} resizeMode="cover">
+      <SafeAreaView style={styles.container}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardView}>
+          <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            <View style={styles.logoArea}>
+              <Image source={require('./assets/icon.png')} style={styles.logo} />
+              <Text style={styles.appTitle}>SwiftSend</Text>
+              <Text style={styles.appSubtitle}>Move money safely in seconds</Text>
             </View>
-          </View>
 
-          <TextInput
-            style={styles.input}
-            placeholder="UserName:"
-            placeholderTextColor="#999"
-            value={username}
-            onChangeText={setUsername}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
+            <View style={styles.switchRow}>
+              <TouchableOpacity
+                style={[styles.switchButton, mode === MODE.LOGIN && styles.switchButtonActive]}
+                onPress={() => setMode(MODE.LOGIN)}
+              >
+                <Text style={[styles.switchText, mode === MODE.LOGIN && styles.switchTextActive]}>Login</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.switchButton, mode === MODE.SIGNUP && styles.switchButtonActive]}
+                onPress={() => setMode(MODE.SIGNUP)}
+              >
+                <Text style={[styles.switchText, mode === MODE.SIGNUP && styles.switchTextActive]}>Sign up</Text>
+              </TouchableOpacity>
+            </View>
 
-          {}
-          <TextInput
-            style={styles.input}
-            placeholder="Password:"
-            placeholderTextColor="#999"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
+            <View style={styles.formContainer}>
+              {mode === MODE.LOGIN ? (
+                <>
+                  <Text style={styles.title}>Welcome back</Text>
+                  <Text style={styles.subtitle}>Log in to access your dashboard.</Text>
+                  {renderRoleSelector()}
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Username"
+                    placeholderTextColor="#9ca3af"
+                    value={username}
+                    onChangeText={setUsername}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Password (min 6 characters)"
+                    placeholderTextColor="#9ca3af"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                  />
+                  <TouchableOpacity onPress={handleRecovery} style={styles.recoveryLink}>
+                    <Text style={styles.recoveryText}>Forgot password?</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.title}>Create account</Text>
+                  <Text style={styles.subtitle}>Set up a profile to start sending and receiving.</Text>
+                  {renderRoleSelector()}
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Full name"
+                    placeholderTextColor="#9ca3af"
+                    value={fullName}
+                    onChangeText={setFullName}
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Email address"
+                    placeholderTextColor="#9ca3af"
+                    value={email}
+                    onChangeText={setEmail}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Phone number"
+                    placeholderTextColor="#9ca3af"
+                    value={phone}
+                    onChangeText={setPhone}
+                    keyboardType="phone-pad"
+                  />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Password (min 8 characters)"
+                    placeholderTextColor="#9ca3af"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry
+                  />
+                </>
+              )}
 
-          {}
-          <TouchableOpacity 
-            style={styles.loginButton}
-            onPress={handleLogin}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.loginButtonText}>Login</Text>
-          </TouchableOpacity>
-
-          {}
-          <Text style={styles.dividerText}>or</Text>
-
-          {}
-          <TouchableOpacity 
-            style={[styles.socialButton, styles.googleButton]}
-            onPress={handleGoogleLogin}
-            activeOpacity={0.8}
-          >
-            <Image
-              source={require('./assets/google.png')}
-              style={[styles.socialLogo, styles.socialLogoGoogle]}
-              resizeMode="contain"
-            />
-            <Text style={[styles.socialButtonText, styles.socialButtonTextDark]}>Continue with Google</Text>
-          </TouchableOpacity>
-
-          {}
-          <TouchableOpacity 
-            style={[styles.socialButton, styles.facebookButton]}
-            onPress={handleFacebookLogin}
-            activeOpacity={0.8}
-          >
-            {!fbImgError ? (
-              <Image
-                source={require('./assets/facebook.png')}
-                style={[styles.socialLogo, styles.socialLogoFacebook]}
-                resizeMode="contain"
-                onError={(e) => { console.warn('facebook image error', e.nativeEvent); setFbImgError(true); }}
-                onLoad={() => console.log('facebook loaded')}
-              />
-            ) : (
-              <View style={[styles.iconFallback, styles.iconFallbackFacebook]}>
-                <Text style={styles.iconFallbackText}>f</Text>
-              </View>
-            )}
-            <Text style={styles.socialButtonText}>Continue with Facebook</Text>
-          </TouchableOpacity>
-
-          {}
-          <TouchableOpacity 
-            style={[styles.socialButton, styles.appleButton]}
-            onPress={handleAppleLogin}
-            activeOpacity={0.8}
-          >
-            {!appleImgError ? (
-              <Image
-                source={require('./assets/apple-logo.png')}
-                style={[styles.socialLogo, styles.socialLogoApple]}
-                resizeMode="contain"
-                onError={(e) => { console.warn('apple image error', e.nativeEvent); setAppleImgError(true); }}
-                onLoad={() => console.log('apple loaded')}
-              />
-            ) : (
-              <View style={[styles.iconFallback, styles.iconFallbackApple]}>
-                <Text style={styles.iconFallbackText}></Text>
-              </View>
-            )}
-            <Text style={styles.socialButtonText}>Continue with Apple</Text>
-          </TouchableOpacity>
-
-          {/* Sign Up Link */}
-          <View style={styles.signUpContainer}>
-            <Text style={styles.signUpText}>Don't have an account? </Text>
-            <TouchableOpacity onPress={handleSignUp}>
-              <Text style={styles.signUpLink}>Sign up</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
-  </SafeAreaView>
-</ImageBackground>
-);
+              <TouchableOpacity
+                style={[styles.loginButton, !formValid && styles.loginButtonDisabled]}
+                onPress={handleLogin}
+                activeOpacity={0.85}
+                disabled={!formValid}
+              >
+                <Text style={styles.loginButtonText}>{mode === MODE.LOGIN ? 'Login' : 'Create account'}</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </ImageBackground>
+  );
 };
 
 const styles = StyleSheet.create({
-backgroundImage: {
-flex: 1,
-width: '100%',
-height: '100%',
-},
-container: {
-flex: 1,
-backgroundColor: 'transparent',
-},
-keyboardView: {
-flex: 1,
-},
-scrollContent: {
-flexGrow: 1,
-justifyContent: 'center',
-alignItems: 'center',
-padding: 20,
-},
-formContainer: {
-width: '100%',
-maxWidth: 400,
-padding: 30,
-borderWidth: 2,
-borderColor: '#4A90E2',
-borderStyle: 'dashed',
-borderRadius: 10,
-backgroundColor: '#fff',
-alignItems: 'center',
-},
-title: {
-fontSize: 40,
-fontWeight: '600',
-color: '#4A90E2',
-marginBottom: 30,
-},
-input: {
-width: '100%',
-height: 50,
-borderWidth: 2,
-borderColor: '#4A90E2',
-borderRadius: 5,
-paddingHorizontal: 15,
-marginBottom: 15,
-fontSize: 14,
-color: '#333',
-},
-loginButton: {
-width: '60%',
-height: 45,
-backgroundColor: '#4A90E2',
-borderRadius: 5,
-justifyContent: 'center',
-alignItems: 'center',
-marginTop: 10,
-marginBottom: 15,
-},
-loginButtonText: {
-color: '#fff',
-fontSize: 16,
-fontWeight: '600',
-},
-dividerText: {
-fontSize: 14,
-color: '#999',
-marginVertical: 15,
-},
-socialButton: {
-width: '100%',
-height: 50,
-borderRadius: 8,
-justifyContent: 'flex-start',
-alignItems: 'center',
-marginBottom: 12,
-flexDirection: 'row',
-paddingHorizontal: 18,
-},
-googleButton: {
-backgroundColor: '#fff',
-borderWidth: 1,
-borderColor: '#e6e9ee',
-},
-facebookButton: {
-backgroundColor: '#1877F2',
-},
-appleButton: {
-backgroundColor: '#000',
-},
-socialLogo: {
-width: 20,
-height: 20,
-marginRight: 12,
-},
-socialLogoGoogle: {
-width: 24,
-height: 24,
-},
-socialLogoFacebook: {
-width: 20,
-height: 20,
-},
-socialLogoApple: {
-width: 18,
-height: 22,
-},
-iconFallback: {
-width: 28,
-height: 28,
-borderRadius: 14,
-alignItems: 'center',
-justifyContent: 'center',
-marginRight: 12,
-},
-iconFallbackText: {
-color: '#fff',
-fontSize: 14,
-fontWeight: '700',
-},
-iconFallbackFacebook: {
-backgroundColor: 'transparent',
-},
-iconFallbackApple: {
-backgroundColor: 'transparent',
-},
-socialButtonText: {
-color: '#fff',
-fontSize: 15,
-fontWeight: '600',
-},
-socialButtonTextDark: {
-color: '#0f1724',
-fontWeight: '600',
-},
-signUpContainer: {
-flexDirection: 'row',
-marginTop: 20,
-},
-signUpText: {
-fontSize: 14,
-color: '#333',
-},
-signUpLink: {
-fontSize: 14,
-color: '#4A90E2',
-fontWeight: '600',
-},
-roleContainer: {
-width: '100%',
-marginBottom: 20,
-},
-roleLabel: {
-fontSize: 14,
-color: '#4A90E2',
-marginBottom: 8,
-fontWeight: '600',
-alignSelf: 'flex-start',
-},
-roleSelector: {
-flexDirection: 'row',
-flexWrap: 'wrap',
-justifyContent: 'center',
-},
-roleChip: {
-paddingVertical: 8,
-paddingHorizontal: 12,
-borderRadius: 20,
-borderWidth: 1,
-borderColor: '#4A90E2',
-margin: 4,
-},
-roleChipActive: {
-backgroundColor: '#4A90E2',
-},
-roleChipText: {
-color: '#4A90E2',
-fontSize: 13,
-fontWeight: '600',
-},
-roleChipTextActive: {
-color: '#fff',
-},
+  backgroundImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+  },
+  container: {
+    flex: 1,
+    backgroundColor: 'rgba(4, 12, 33, 0.55)',
+  },
+  keyboardView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
+  logoArea: {
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  logo: {
+    width: 92,
+    height: 92,
+    marginBottom: 8,
+  },
+  appTitle: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  appSubtitle: {
+    color: '#e2e8f0',
+    marginTop: 4,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 16,
+    padding: 4,
+    marginBottom: 12,
+  },
+  switchButton: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderRadius: 12,
+  },
+  switchButtonActive: {
+    backgroundColor: '#fff',
+  },
+  switchText: {
+    color: '#cbd5e1',
+    fontWeight: '600',
+  },
+  switchTextActive: {
+    color: '#0f172a',
+  },
+  formContainer: {
+    width: '100%',
+    maxWidth: 480,
+    padding: 24,
+    borderRadius: 20,
+    backgroundColor: '#fff',
+    alignSelf: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 18,
+    elevation: 6,
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginBottom: 12,
+  },
+  roleContainer: {
+    marginTop: 6,
+    marginBottom: 12,
+  },
+  roleLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 6,
+  },
+  roleSelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  roleChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    margin: 4,
+    backgroundColor: '#f8fafc',
+  },
+  roleChipActive: {
+    backgroundColor: '#0f172a',
+    borderColor: '#0f172a',
+  },
+  roleChipText: {
+    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  roleChipTextActive: {
+    color: '#fff',
+  },
+  input: {
+    width: '100%',
+    height: 52,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: 12,
+    paddingHorizontal: 15,
+    marginBottom: 12,
+    fontSize: 15,
+    color: '#111827',
+    backgroundColor: '#f8fafc',
+  },
+  loginButton: {
+    width: '100%',
+    height: 50,
+    backgroundColor: '#4A90E2',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  loginButtonDisabled: {
+    opacity: 0.6,
+  },
+  loginButtonText: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  recoveryLink: {
+    alignSelf: 'flex-end',
+    marginBottom: 4,
+  },
+  recoveryText: {
+    color: '#2563eb',
+    fontWeight: '600',
+  },
 });
 
 export default LoginScreen;

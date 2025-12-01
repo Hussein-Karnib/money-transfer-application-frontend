@@ -53,6 +53,10 @@ const ReceiveMoneyScreen = () => {
           <Text style={styles.cardTitle}>Your SwiftSend ID</Text>
           <Text style={styles.userId}>{user.id}</Text>
           <Text style={styles.cardSubtitle}>Share this ID with people who need to transfer money to you.</Text>
+          <View style={styles.qrPlaceholder}>
+            <Text style={styles.qrText}>QR</Text>
+          </View>
+          <Text style={styles.cardSubtitle}>Scan or long-press to copy your receiving details.</Text>
         </View>
 
         <View style={styles.formBlock}>
@@ -130,6 +134,18 @@ const styles = StyleSheet.create({
   cardTitle: { color: '#bfdbfe', fontSize: 14, letterSpacing: 0.5 },
   userId: { color: '#fff', fontSize: 28, fontWeight: '700', marginVertical: 12 },
   cardSubtitle: { color: '#dbeafe', fontSize: 14 },
+  qrPlaceholder: {
+    marginVertical: 12,
+    width: 120,
+    height: 120,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#bfdbfe',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  qrText: { color: '#fff', fontWeight: '800', fontSize: 18 },
   formBlock: {
     backgroundColor: '#fff',
     borderRadius: 16,
