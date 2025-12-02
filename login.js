@@ -189,6 +189,39 @@ const LoginScreen = () => {
               >
                 <Text style={styles.loginButtonText}>{mode === MODE.LOGIN ? 'Login' : 'Create account'}</Text>
               </TouchableOpacity>
+
+              {mode === MODE.LOGIN && (
+                <View style={styles.socialSection}>
+                  <View style={styles.socialDividerRow}>
+                    <View style={styles.socialDivider} />
+                    <Text style={styles.socialDividerText}>Or continue with</Text>
+                    <View style={styles.socialDivider} />
+                  </View>
+                  <View style={styles.socialRow}>
+                    <TouchableOpacity
+                      style={styles.socialButton}
+                      onPress={() => Alert.alert('Google login', 'Google login is not wired yet in this demo.')}
+                    >
+                      <Image source={require('./assets/google.png')} style={styles.socialIcon} />
+                      <Text style={styles.socialLabel}>Google</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.socialButton}
+                      onPress={() => Alert.alert('Facebook login', 'Facebook login is not wired yet in this demo.')}
+                    >
+                      <Image source={require('./assets/facebook.png')} style={styles.socialIcon} />
+                      <Text style={styles.socialLabel}>Facebook</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.socialButton}
+                      onPress={() => Alert.alert('Apple login', 'Apple login is not wired yet in this demo.')}
+                    >
+                      <Image source={require('./assets/apple-logo.png')} style={styles.socialIcon} />
+                      <Text style={styles.socialLabel}>Apple</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -350,6 +383,52 @@ const styles = StyleSheet.create({
   recoveryText: {
     color: '#2563eb',
     fontWeight: '600',
+  },
+  socialSection: {
+    marginTop: 18,
+  },
+  socialDividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  socialDivider: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#e5e7eb',
+  },
+  socialDividerText: {
+    marginHorizontal: 8,
+    fontSize: 12,
+    color: '#6b7280',
+    fontWeight: '500',
+  },
+  socialRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  socialButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#f9fafb',
+    marginHorizontal: 4,
+  },
+  socialIcon: {
+    width: 18,
+    height: 18,
+    marginRight: 6,
+    resizeMode: 'contain',
+  },
+  socialLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#111827',
   },
 });
 

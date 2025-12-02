@@ -16,12 +16,14 @@ import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCirclePlus } from '@fortawesome/free-solid-svg-icons';
 import Bar from '../MoreStuff/bar';
 import { useAppContext, ROLE_CONFIG } from '../context/AppContext';
+import { useNavigation } from '@react-navigation/native';
 
 export default function Settings() {
   const [modalVisible, setModalVisible] = useState(false);
-  const { user, role, switchRole } = useAppContext();
+  const { user, role, switchRole, signOut } = useAppContext();
   const [profileImage, setProfileImage] = useState(null);
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation();
 
   // Request permission
   const requestPermission = async (mode) => {
@@ -85,6 +87,23 @@ export default function Settings() {
     return currentYear - birthYear;
   };
 
+  const handleLogout = () => {
+    Alert.alert('Log out', 'Are you sure you want to log out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Log out',
+        style: 'destructive',
+        onPress: () => {
+          signOut();
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'Auth' }],
+          });
+        },
+      },
+    ]);
+  };
+
   return (
     <SafeAreaView
       style={[styles.screen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
@@ -136,6 +155,10 @@ export default function Settings() {
             ))}
           </View>
         </View>
+
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <Text style={styles.logoutText}>Log out</Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {/* Modal */}
@@ -214,4 +237,16 @@ const styles = StyleSheet.create({
   roleChipActive: { backgroundColor: '#4A90E2' },
   roleChipText: { color: '#4A90E2', fontWeight: '600' },
   roleChipTextActive: { color: '#fff' },
+  logoutButton: {
+    marginTop: 30,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#ef4444',
+    alignItems: 'center',
+  },
+  logoutText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
 });

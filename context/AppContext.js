@@ -298,6 +298,21 @@ export const AppProvider = ({ children }) => {
     return ticket;
   }, [appendNotification, supportTickets.length]);
 
+  const signOut = useCallback(() => {
+    setUser({
+      name: 'Alex Doe',
+      email: 'alex.doe@example.com',
+      phone: '+1 (555) 123-4567',
+      id: 'MT-458210',
+      birthYear: 1996,
+    });
+    setBalance(8250.75);
+    setTransactions(INITIAL_TRANSACTIONS);
+    setNotifications(INITIAL_NOTIFICATIONS);
+    setSupportTickets([]);
+    setRole('user');
+  }, []);
+
   const signIn = useCallback(
     ({ name, email }) => {
       setUser((prev) => ({
@@ -366,6 +381,7 @@ export const AppProvider = ({ children }) => {
       switchRole,
       addBeneficiary,
       updateAgentStatus,
+      signOut,
       ROLE_CONFIG,
     }),
     [
