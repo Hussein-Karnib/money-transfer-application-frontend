@@ -141,6 +141,104 @@ const MOCK_AGENTS = [
   },
 ];
 
+const MOCK_KYC_USERS = [
+  {
+    id: 'KYC-001',
+    name: 'Sarah Johnson',
+    email: 'sarah.j@example.com',
+    phone: '+1 (555) 234-5678',
+    submittedDate: '2025-01-18',
+    status: 'Pending',
+    documentType: 'Passport',
+  },
+  {
+    id: 'KYC-002',
+    name: 'Michael Chen',
+    email: 'michael.c@example.com',
+    phone: '+44 20 7946 0958',
+    submittedDate: '2025-01-19',
+    status: 'Pending',
+    documentType: 'Driver License',
+  },
+  {
+    id: 'KYC-003',
+    name: 'Elena Rodriguez',
+    email: 'elena.r@example.com',
+    phone: '+34 91 123 4567',
+    submittedDate: '2025-01-15',
+    status: 'Approved',
+    documentType: 'National ID',
+  },
+  {
+    id: 'KYC-004',
+    name: 'David Kim',
+    email: 'david.k@example.com',
+    phone: '+82 2 1234 5678',
+    submittedDate: '2025-01-20',
+    status: 'Pending',
+    documentType: 'Passport',
+  },
+];
+
+const MOCK_FRAUD_ALERTS = [
+  {
+    id: 'FRAUD-001',
+    type: 'Unusual Pattern',
+    severity: 'High',
+    description: 'Multiple rapid transfers to new beneficiaries detected',
+    userId: 'MT-458211',
+    userName: 'John Smith',
+    transactionId: 'TX-202501-0045',
+    amount: 15000,
+    currency: 'USD',
+    flaggedAt: '2025-01-20T14:30:00.000Z',
+    status: 'Pending Review',
+    riskScore: 85,
+  },
+  {
+    id: 'FRAUD-002',
+    type: 'Amount Anomaly',
+    severity: 'Medium',
+    description: 'Transaction amount exceeds user average by 500%',
+    userId: 'MT-458212',
+    userName: 'Maria Garcia',
+    transactionId: 'TX-202501-0048',
+    amount: 5000,
+    currency: 'USD',
+    flaggedAt: '2025-01-20T11:15:00.000Z',
+    status: 'Under Investigation',
+    riskScore: 65,
+  },
+  {
+    id: 'FRAUD-003',
+    type: 'Geographic Mismatch',
+    severity: 'High',
+    description: 'Transfer initiated from new location with IP mismatch',
+    userId: 'MT-458213',
+    userName: 'Ahmed Hassan',
+    transactionId: 'TX-202501-0052',
+    amount: 8000,
+    currency: 'EUR',
+    flaggedAt: '2025-01-20T09:45:00.000Z',
+    status: 'Pending Review',
+    riskScore: 78,
+  },
+  {
+    id: 'FRAUD-004',
+    type: 'Device Change',
+    severity: 'Low',
+    description: 'New device detected for sensitive transaction',
+    userId: 'MT-458214',
+    userName: 'Lisa Wang',
+    transactionId: 'TX-202501-0055',
+    amount: 2500,
+    currency: 'GBP',
+    flaggedAt: '2025-01-19T16:20:00.000Z',
+    status: 'Resolved',
+    riskScore: 45,
+  },
+];
+
 export const AppProvider = ({ children }) => {
   const [user, setUser] = useState({
     name: 'Alex Doe',
@@ -157,6 +255,8 @@ export const AppProvider = ({ children }) => {
   const [services, setServices] = useState(MOCK_SERVICES);
   const [beneficiaries, setBeneficiaries] = useState(MOCK_BENEFICIARIES);
   const [agents, setAgents] = useState(MOCK_AGENTS);
+  const [kycUsers, setKycUsers] = useState(MOCK_KYC_USERS);
+  const [fraudAlerts, setFraudAlerts] = useState(MOCK_FRAUD_ALERTS);
 
   const getFxRate = useCallback((currency) => FX_RATES[currency] || 1, []);
 
@@ -358,6 +458,39 @@ export const AppProvider = ({ children }) => {
     );
   }, []);
 
+  const updateKycStatus = useCallback(({ id, status }) => {
+    setKycUsers((prev) =>
+      prev.map((user) => (user.id === id ? { ...user, status } : user)),
+    );
+    appendNotification(`KYC status updated to ${status} for user ${id}`);
+  }, [appendNotification]);
+
+  const updateFraudAlertStatus = useCallback(({ id, status }) => {
+    setFraudAlerts((prev) =>
+      prev.map((alert) => (alert.id === id ? { ...alert, status } : alert)),
+    );
+    appendNotification(`Fraud alert ${id} status updated to ${status}`);
+  }, [appendNotification]);
+
+  const generateReport = useCallback((reportType, startDate, endDate) => {
+    // Mock report generation - in real app, this would call an API
+    const reportId = `RPT-${Date.now()}`;
+    appendNotification(`Report ${reportId} generated for ${reportType}`);
+    return {
+      id: reportId,
+      type: reportType,
+      startDate,
+      endDate,
+      generatedAt: new Date().toISOString(),
+      data: {
+        totalTransactions: transactions.length,
+        totalAmount: transactions.reduce((sum, t) => sum + (t.amount || 0), 0),
+        fraudAlerts: fraudAlerts.length,
+        pendingKyc: kycUsers.filter((u) => u.status === 'Pending').length,
+      },
+    };
+  }, [appendNotification, transactions, fraudAlerts, kycUsers]);
+
   const value = useMemo(
     () => ({
       user,
@@ -369,6 +502,8 @@ export const AppProvider = ({ children }) => {
       services,
       beneficiaries,
       agents,
+      kycUsers,
+      fraudAlerts,
       fxRates: FX_RATES,
       transferFeePercent: TRANSFER_FEE_PERCENT,
       formatCurrency,
@@ -381,6 +516,9 @@ export const AppProvider = ({ children }) => {
       switchRole,
       addBeneficiary,
       updateAgentStatus,
+      updateKycStatus,
+      updateFraudAlertStatus,
+      generateReport,
       signOut,
       ROLE_CONFIG,
     }),
@@ -388,6 +526,8 @@ export const AppProvider = ({ children }) => {
       balance,
       beneficiaries,
       agents,
+      kycUsers,
+      fraudAlerts,
       notifications,
       receiveMoney,
       requestMoney,
@@ -402,6 +542,9 @@ export const AppProvider = ({ children }) => {
       addBeneficiary,
       switchRole,
       updateAgentStatus,
+      updateKycStatus,
+      updateFraudAlertStatus,
+      generateReport,
       convertToBase,
       formatCurrency,
     ],

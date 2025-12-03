@@ -16,6 +16,8 @@ import BeneficiariesScreen from './screens/BeneficiariesScreen';
 import AgentConsoleScreen from './screens/AgentConsoleScreen';
 import AdminConsoleScreen from './screens/AdminConsoleScreen';
 import AgentMapScreen from './screens/AgentMapScreen';
+import FraudDetectionScreen from './screens/FraudDetectionScreen';
+import ReportsScreen from './screens/ReportsScreen';
 import { AppProvider, useAppContext } from './context/AppContext';
 
 const Stack = createNativeStackNavigator();
@@ -37,13 +39,13 @@ const drawerScreensByRole = {
     { name: 'Dashboard', component: AgentConsoleScreen, options: { headerTitle: 'Agent Console' } },
     { name: 'Receive Money', component: ReceiveMoneyScreen },
     { name: 'Transactions', component: TransactionHistoryScreen },
-    { name: 'Agents Near You', component: AgentMapScreen },
     { name: 'Support', component: SupportScreen },
     { name: 'Settings', component: Settings },
   ],
   admin: [
     { name: 'Dashboard', component: AdminConsoleScreen, options: { headerTitle: 'Admin Console' } },
-    { name: 'Agents Near You', component: AgentMapScreen },
+    { name: 'Fraud Detection', component: FraudDetectionScreen, options: { headerTitle: 'Fraud Detection' } },
+    { name: 'Reports', component: ReportsScreen, options: { headerTitle: 'Reports' } },
     { name: 'Support', component: SupportScreen },
     { name: 'Settings', component: Settings },
   ],

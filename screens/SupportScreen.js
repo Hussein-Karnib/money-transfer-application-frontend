@@ -20,7 +20,7 @@ const FAQ = [
 ];
 
 const SupportScreen = () => {
-  const { submitSupportTicket } = useAppContext();
+  const { submitSupportTicket, supportTickets, role } = useAppContext();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [message, setMessage] = useState('');
@@ -39,6 +39,55 @@ const SupportScreen = () => {
     }
   };
 
+  const formatDate = (timestamp) => {
+    const date = new Date(timestamp);
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  // Admin view: Show customer support chat (read-only)
+  if (role === 'admin') {
+    return (
+      <AppScreen scrollable contentContainerStyle={styles.container}>
+        <Text style={styles.title}>Customer Support Chat</Text>
+        <Text style={styles.subtitle}>View all customer support messages and inquiries.</Text>
+
+        {supportTickets.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyText}>No support tickets yet</Text>
+            <Text style={styles.emptySubtext}>Customer messages will appear here</Text>
+          </View>
+        ) : (
+          <View style={styles.chatContainer}>
+            {supportTickets.map((ticket) => (
+              <View key={ticket.id} style={styles.chatMessage}>
+                <View style={styles.messageHeader}>
+                  <View style={styles.userInfo}>
+                    <Text style={styles.userName}>{ticket.name}</Text>
+                    <Text style={styles.userEmail}>{ticket.email}</Text>
+                  </View>
+                  <View style={styles.ticketInfo}>
+                    <Text style={styles.ticketId}>{ticket.id}</Text>
+                    <Text style={styles.messageTime}>{formatDate(ticket.timestamp)}</Text>
+                  </View>
+                </View>
+                <View style={styles.messageBubble}>
+                  <Text style={styles.messageText}>{ticket.message}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        )}
+      </AppScreen>
+    );
+  }
+
+  // Regular user view: Show form to submit support tickets
   return (
     <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Support & Contact</Text>
@@ -134,6 +183,89 @@ const styles = StyleSheet.create({
   faqItem: { marginBottom: 16 },
   faqQuestion: { fontSize: 16, fontWeight: '600', color: '#101828' },
   faqAnswer: { marginTop: 4, color: '#475467', lineHeight: 20 },
+  chatContainer: {
+    marginTop: 20,
+  },
+  chatMessage: {
+    marginBottom: 20,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#e4e7ec',
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  messageHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f1f5',
+  },
+  userInfo: {
+    flex: 1,
+  },
+  userName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#101828',
+    marginBottom: 4,
+  },
+  userEmail: {
+    fontSize: 14,
+    color: '#475467',
+  },
+  ticketInfo: {
+    alignItems: 'flex-end',
+  },
+  ticketId: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#4A90E2',
+    marginBottom: 4,
+  },
+  messageTime: {
+    fontSize: 12,
+    color: '#94a3b8',
+  },
+  messageBubble: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    padding: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: '#4A90E2',
+  },
+  messageText: {
+    fontSize: 15,
+    color: '#334155',
+    lineHeight: 22,
+  },
+  emptyState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e4e7ec',
+    marginTop: 20,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#101828',
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#94a3b8',
+  },
 });
 
 export default SupportScreen;
