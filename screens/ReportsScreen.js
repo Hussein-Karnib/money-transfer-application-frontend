@@ -66,11 +66,11 @@ const REPORTS_ENDPOINTS = [
 
 const ReportsScreen = () => {
   const {
-    transactions,
-    fraudAlerts,
-    kycUsers,
-    agents,
-    supportTickets,
+    transactions = [],
+    fraudAlerts = [],
+    kycSubmissions = [],
+    agents = [],
+    supportTickets = [],
     generateReport,
     formatCurrency,
   } = useAppContext();
@@ -100,7 +100,7 @@ const ReportsScreen = () => {
   const getReportStats = () => {
     const totalTransactions = transactions.length;
     const totalAmount = transactions.reduce((sum, t) => sum + (t.amount || 0), 0);
-    const pendingKyc = kycUsers.filter((u) => u.status === 'Pending').length;
+    const pendingKyc = (kycSubmissions || []).filter((u) => u.status === 'Pending').length;
     const activeFraudAlerts = fraudAlerts.filter((a) => a.status !== 'Resolved').length;
     const totalAgents = agents.length;
     const openTickets = supportTickets.length;

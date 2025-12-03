@@ -20,9 +20,13 @@ const ReceiveMoneyScreen = () => {
     [requestAmount, requestRecipient],
   );
 
-  const handleReceive = () => {
+  const handleReceive = async () => {
     try {
-      const transaction = receiveMoney({ counterpart: sender || 'Unknown sender', amount, note });
+      const transaction = await receiveMoney({ 
+        counterpart: sender || 'Unknown sender', 
+        amount, 
+        note 
+      });
       Alert.alert('Funds received', `Added $${transaction.amount.toFixed(2)} to your balance.`);
       setSender('');
       setAmount('');
@@ -32,9 +36,13 @@ const ReceiveMoneyScreen = () => {
     }
   };
 
-  const handleRequest = () => {
+  const handleRequest = async () => {
     try {
-      const request = requestMoney({ counterpart: requestRecipient, amount: requestAmount, note: requestNote });
+      const request = await requestMoney({ 
+        counterpart: requestRecipient, 
+        amount: requestAmount, 
+        note: requestNote 
+      });
       Alert.alert('Request sent', `Tracking ID: ${request.requestId}`);
       setRequestRecipient('');
       setRequestAmount('');
@@ -47,16 +55,12 @@ const ReceiveMoneyScreen = () => {
   return (
     <AppScreen scrollable contentContainerStyle={styles.container}>
         <Text style={styles.title}>Receive Money</Text>
-        <Text style={styles.subtitle}>Share your personal ID or QR code below.</Text>
+        <Text style={styles.subtitle}>Log incoming funds or request money from others.</Text>
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Your SwiftSend ID</Text>
-          <Text style={styles.userId}>{user.id}</Text>
+          <Text style={styles.userId}>{user?.id || 'N/A'}</Text>
           <Text style={styles.cardSubtitle}>Share this ID with people who need to transfer money to you.</Text>
-          <View style={styles.qrPlaceholder}>
-            <Text style={styles.qrText}>QR</Text>
-          </View>
-          <Text style={styles.cardSubtitle}>Scan or long-press to copy your receiving details.</Text>
         </View>
 
         <View style={styles.formBlock}>
@@ -132,18 +136,6 @@ const styles = StyleSheet.create({
   cardTitle: { color: '#bfdbfe', fontSize: 14, letterSpacing: 0.5 },
   userId: { color: '#fff', fontSize: 28, fontWeight: '700', marginVertical: 12 },
   cardSubtitle: { color: '#dbeafe', fontSize: 14 },
-  qrPlaceholder: {
-    marginVertical: 12,
-    width: 120,
-    height: 120,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#bfdbfe',
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  qrText: { color: '#fff', fontWeight: '800', fontSize: 18 },
   formBlock: {
     backgroundColor: '#fff',
     borderRadius: 16,

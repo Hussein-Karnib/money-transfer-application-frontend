@@ -1,0 +1,227 @@
+{
+  "users": [
+    {
+      "id": "MT-458210",
+      "name": "Alex Doe",
+      "email": "alex.doe@example.com",
+      "phone": "+1 (555) 123-4567",
+      "password": "$2b$10$exampleHashedPassword",
+      "birthYear": 1996,
+      "balance": 8250.75,
+      "role": "user",
+      "kycStatus": "approved",
+      "createdAt": "2024-01-15T10:00:00.000Z"
+    },
+    {
+      "id": "MT-458211",
+      "name": "John Smith",
+      "email": "john.smith@example.com",
+      "phone": "+1 (555) 234-5678",
+      "password": "$2b$10$exampleHashedPassword2",
+      "birthYear": 1990,
+      "balance": 5000.00,
+      "role": "user",
+      "kycStatus": "pending",
+      "createdAt": "2024-01-18T14:30:00.000Z"
+    },
+    {
+      "id": "MT-458212",
+      "name": "Maria Garcia",
+      "email": "maria.garcia@example.com",
+      "phone": "+44 20 7946 0958",
+      "password": "$2b$10$exampleHashedPassword3",
+      "birthYear": 1988,
+      "balance": 3200.50,
+      "role": "user",
+      "kycStatus": "pending",
+      "createdAt": "2024-01-19T11:15:00.000Z"
+    },
+    {
+      "id": "ADMIN-001",
+      "name": "Admin User",
+      "email": "admin@swiftsend.app",
+      "phone": "+1 (555) 000-0000",
+      "password": "$2b$10$adminHashedPassword",
+      "birthYear": 1985,
+      "balance": 0,
+      "role": "admin",
+      "kycStatus": "approved",
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "transactions": [
+    {
+      "id": "TX-202501-0001",
+      "senderId": "MT-458210",
+      "recipientId": "MT-458211",
+      "type": "sent",
+      "counterpart": "John Smith",
+      "amount": 150.00,
+      "currency": "USD",
+      "fxRate": 1.0,
+      "fee": 1.88,
+      "note": "Dinner refund",
+      "status": "completed",
+      "timestamp": "2025-01-18T18:45:00.000Z"
+    },
+    {
+      "id": "TX-202501-0002",
+      "senderId": "SYSTEM",
+      "recipientId": "MT-458210",
+      "type": "received",
+      "counterpart": "FinPay Payroll",
+      "amount": 1500.00,
+      "currency": "USD",
+      "fxRate": 1.0,
+      "fee": 0,
+      "note": "Monthly Salary",
+      "status": "completed",
+      "timestamp": "2025-01-15T10:00:00.000Z"
+    },
+    {
+      "id": "TX-202501-0003",
+      "senderId": "SYSTEM",
+      "recipientId": "MT-458210",
+      "type": "received",
+      "counterpart": "Tasha Bank",
+      "amount": 300.00,
+      "currency": "USD",
+      "fxRate": 1.0,
+      "fee": 0,
+      "note": "Cashback bonus",
+      "status": "completed",
+      "timestamp": "2025-01-20T08:20:00.000Z"
+    }
+  ],
+  "beneficiaries": [
+    {
+      "id": "BN-10",
+      "userId": "MT-458210",
+      "name": "Jamie Lee",
+      "country": "Canada",
+      "method": "Bank deposit",
+      "verified": true,
+      "createdAt": "2024-12-01T10:00:00.000Z"
+    },
+    {
+      "id": "BN-11",
+      "userId": "MT-458210",
+      "name": "Amina Yusuf",
+      "country": "Kenya",
+      "method": "Mobile wallet",
+      "verified": false,
+      "createdAt": "2025-01-10T14:30:00.000Z"
+    }
+  ],
+  "supportTickets": [
+    {
+      "id": "SUP-001",
+      "userId": "MT-458210",
+      "name": "Alex Doe",
+      "email": "alex.doe@example.com",
+      "message": "I need help with my recent transaction",
+      "status": "open",
+      "timestamp": "2025-01-20T10:00:00.000Z"
+    },
+    {
+      "id": "SUP-002",
+      "userId": "MT-458211",
+      "name": "John Smith",
+      "email": "john.smith@example.com",
+      "message": "How do I reset my password?",
+      "status": "open",
+      "timestamp": "2025-01-21T09:15:00.000Z"
+    }
+  ],
+  "kycSubmissions": [
+    {
+      "id": "KYC-001",
+      "userId": "MT-458211",
+      "name": "John Smith",
+      "email": "john.smith@example.com",
+      "phone": "+1 (555) 234-5678",
+      "submittedDate": "2025-01-18",
+      "status": "Pending",
+      "documentType": "Passport"
+    },
+    {
+      "id": "KYC-002",
+      "userId": "MT-458212",
+      "name": "Maria Garcia",
+      "email": "maria.garcia@example.com",
+      "phone": "+44 20 7946 0958",
+      "submittedDate": "2025-01-19",
+      "status": "Pending",
+      "documentType": "Driver License"
+    },
+    {
+      "id": "KYC-003",
+      "userId": "MT-458213",
+      "name": "Elena Rodriguez",
+      "email": "elena.r@example.com",
+      "phone": "+34 91 123 4567",
+      "submittedDate": "2025-01-15",
+      "status": "Approved",
+      "documentType": "National ID"
+    }
+  ],
+  "fraudAlerts": [
+    {
+      "id": "FRAUD-001",
+      "type": "Unusual Pattern",
+      "severity": "High",
+      "description": "Multiple rapid transfers to new beneficiaries detected",
+      "userId": "MT-458211",
+      "userName": "John Smith",
+      "transactionId": "TX-202501-0045",
+      "amount": 15000,
+      "currency": "USD",
+      "flaggedAt": "2025-01-20T14:30:00.000Z",
+      "status": "Pending Review",
+      "riskScore": 85
+    },
+    {
+      "id": "FRAUD-002",
+      "type": "Amount Anomaly",
+      "severity": "Medium",
+      "description": "Transaction amount exceeds user average by 500%",
+      "userId": "MT-458212",
+      "userName": "Maria Garcia",
+      "transactionId": "TX-202501-0048",
+      "amount": 5000,
+      "currency": "USD",
+      "flaggedAt": "2025-01-20T11:15:00.000Z",
+      "status": "Under Investigation",
+      "riskScore": 65
+    }
+  ],
+  "agents": [
+    {
+      "id": "AG-21",
+      "name": "SwiftSend Downtown",
+      "city": "Nairobi",
+      "hours": "08:00 - 20:00",
+      "status": "Open",
+      "commissions": "1.5%"
+    },
+    {
+      "id": "AG-22",
+      "name": "PayPoint Lisbon",
+      "city": "Lisbon",
+      "hours": "09:00 - 18:00",
+      "status": "Closed",
+      "commissions": "1.8%"
+    }
+  ],
+  "notifications": [
+    "Account verified successfully",
+    "Security tip: Enable biometric authentication",
+    "Weekly summary ready to view"
+  ],
+  "settings": {
+    "currency": "USD",
+    "language": "en",
+    "notificationsEnabled": true,
+    "biometricEnabled": false
+  }
+}

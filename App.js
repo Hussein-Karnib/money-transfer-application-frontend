@@ -31,7 +31,6 @@ const drawerScreensByRole = {
     { name: 'Transactions', component: TransactionHistoryScreen },
     { name: 'Service Search', component: ServiceSearchScreen },
     { name: 'Beneficiaries', component: BeneficiariesScreen },
-    { name: 'Agents Near You', component: AgentMapScreen },
     { name: 'Support', component: SupportScreen },
     { name: 'Settings', component: Settings },
   ],
@@ -80,10 +79,13 @@ const RoleAwareDrawer = () => {
   );
 };
 
+// Navigation ref for global navigation access
+export const navigationRef = React.createRef();
+
 export default function App() {
   return (
     <AppProvider>
-      <NavigationContainer>
+      <NavigationContainer ref={navigationRef}>
         <Stack.Navigator initialRouteName="Welcome" screenOptions={{ headerShown: false }}>
           <Stack.Screen name="Welcome" component={WelcomeScreen} />
           <Stack.Screen name="Auth" component={LoginScreen} />

@@ -31,12 +31,14 @@ const LoginScreen = () => {
   const [mode, setMode] = useState(MODE.LOGIN);
   const [selectedRole, setSelectedRole] = useState('user');
   const navigation = useNavigation();
-  const { signIn, switchRole } = useAppContext();
+  const { login, registerAndLogin, switchRole } = useAppContext();
   const roleKeys = useMemo(() => Object.keys(ROLE_CONFIG), []);
+  const [loading, setLoading] = useState(false);
 
   const formValid = useMemo(() => {
     if (mode === MODE.LOGIN) {
-      return username.trim().length > 0 && password.trim().length >= 6;
+      // For login, validate email format
+      return validateEmail(username.trim()) && password.trim().length >= 6;
     }
 
     return (
@@ -47,22 +49,51 @@ const LoginScreen = () => {
     );
   }, [email, fullName, mode, password, phone, username]);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!formValid) {
       Alert.alert('Missing details', 'Please fill out all required fields.');
       return;
     }
 
-    if (mode === MODE.LOGIN) {
-      signIn({ name: username.trim(), email: `${username.replace(/\s/g, '').toLowerCase()}@swiftsend.app` });
-    } else {
-      signIn({ name: fullName.trim(), email: email.trim() });
+    try {
+      setLoading(true);
+
+      if (mode === MODE.LOGIN) {
+        // For login, use email from username field
+        const loginEmail = username.trim();
+        
+        // Call the actual login function
+        await login(loginEmail, password);
+        
+        // Note: Role comes from user data, but we can override if needed
+        if (selectedRole !== 'user') {
+          switchRole(selectedRole);
+        }
+      } else {
+        // For signup, call registerAndLogin
+        await registerAndLogin({
+          name: fullName.trim(),
+          email: email.trim(),
+          password: password,
+          phone: phone.trim(),
+        });
+        
+        // Switch role if needed
+        if (selectedRole !== 'user') {
+          switchRole(selectedRole);
+        }
+      }
+
+      // Navigate to main screen on success
+      navigation.reset({
+        index: 0,
+        routes: [{ name: 'Main' }],
+      });
+    } catch (error) {
+      Alert.alert('Authentication Error', error.message || 'Failed to login. Please try again.');
+    } finally {
+      setLoading(false);
     }
-    switchRole(selectedRole);
-    navigation.reset({
-      index: 0,
-      routes: [{ name: 'Main' }],
-    });
   };
 
   const handleRecovery = () => {
@@ -122,12 +153,13 @@ const LoginScreen = () => {
                   {renderRoleSelector()}
                   <TextInput
                     style={styles.input}
-                    placeholder="Username"
+                    placeholder="Email address"
                     placeholderTextColor="#9ca3af"
                     value={username}
                     onChangeText={setUsername}
                     autoCapitalize="none"
                     autoCorrect={false}
+                    keyboardType="email-address"
                   />
                   <TextInput
                     style={styles.input}
@@ -182,12 +214,14 @@ const LoginScreen = () => {
               )}
 
               <TouchableOpacity
-                style={[styles.loginButton, !formValid && styles.loginButtonDisabled]}
+                style={[styles.loginButton, (!formValid || loading) && styles.loginButtonDisabled]}
                 onPress={handleLogin}
                 activeOpacity={0.85}
-                disabled={!formValid}
+                disabled={!formValid || loading}
               >
-                <Text style={styles.loginButtonText}>{mode === MODE.LOGIN ? 'Login' : 'Create account'}</Text>
+                <Text style={styles.loginButtonText}>
+                  {loading ? 'Please wait...' : mode === MODE.LOGIN ? 'Login' : 'Create account'}
+                </Text>
               </TouchableOpacity>
 
               {mode === MODE.LOGIN && (
@@ -296,11 +330,15 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: '#fff',
     alignSelf: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 8 },
-    shadowRadius: 18,
-    elevation: 6,
+    ...(Platform.OS === 'web' ? {
+      boxShadow: '0 8px 18px rgba(0, 0, 0, 0.1)',
+    } : {
+      shadowColor: '#000',
+      shadowOpacity: 0.1,
+      shadowOffset: { width: 0, height: 8 },
+      shadowRadius: 18,
+      elevation: 6,
+    }),
   },
   title: {
     fontSize: 26,

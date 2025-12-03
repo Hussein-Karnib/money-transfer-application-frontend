@@ -16,7 +16,8 @@ import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCirclePlus } from '@fortawesome/free-solid-svg-icons';
 import Bar from '../MoreStuff/bar';
 import { useAppContext, ROLE_CONFIG } from '../context/AppContext';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, CommonActions } from '@react-navigation/native';
+import { navigationRef } from '../App';
 
 export default function Settings() {
   const [modalVisible, setModalVisible] = useState(false);
@@ -93,12 +94,42 @@ export default function Settings() {
       {
         text: 'Log out',
         style: 'destructive',
-        onPress: () => {
-          signOut();
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'Auth' }],
-          });
+        onPress: async () => {
+          try {
+            // Sign out and clear state first
+            await signOut();
+          } catch (error) {
+            console.error('Logout error:', error);
+          }
+          
+          // Navigate to Auth screen using the navigation ref
+          if (navigationRef.current) {
+            try {
+              navigationRef.current.reset({
+                index: 0,
+                routes: [{ name: 'Auth' }],
+              });
+            } catch (navError) {
+              console.error('Navigation reset error:', navError);
+              // Fallback: try navigate
+              try {
+                navigationRef.current.navigate('Auth');
+              } catch (fallbackError) {
+                console.error('Navigation navigate error:', fallbackError);
+              }
+            }
+          } else {
+            // Fallback: use local navigation
+            try {
+              const rootNav = navigation.getParent() || navigation;
+              rootNav.reset({
+                index: 0,
+                routes: [{ name: 'Auth' }],
+              });
+            } catch (fallbackError) {
+              console.error('Fallback navigation error:', fallbackError);
+            }
+          }
         },
       },
     ]);
@@ -142,18 +173,12 @@ export default function Settings() {
         </View>
 
         <View style={styles.roleSection}>
-          <Text style={styles.roleLabel}>Active role: {ROLE_CONFIG[role].label}</Text>
-          <View style={styles.roleChips}>
-            {Object.keys(ROLE_CONFIG).map((key) => (
-              <TouchableOpacity
-                key={key}
-                style={[styles.roleChip, role === key && styles.roleChipActive]}
-                onPress={() => switchRole(key)}
-              >
-                <Text style={[styles.roleChipText, role === key && styles.roleChipTextActive]}>{ROLE_CONFIG[key].label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          <Text style={styles.roleLabel}>Role: {ROLE_CONFIG[role].label}</Text>
+          <Text style={styles.roleInfo}>
+            {user?.role === 'admin' 
+              ? 'Your role is set by your account type and cannot be changed.'
+              : 'Your role is set by your account type and cannot be changed.'}
+          </Text>
         </View>
 
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
@@ -224,6 +249,7 @@ const styles = StyleSheet.create({
   modalButtonText: { color: '#fff', fontWeight: 'bold' },
   roleSection: { marginTop: 30 },
   roleLabel: { fontSize: 16, fontWeight: '600', marginBottom: 12 },
+  roleInfo: { fontSize: 14, color: '#6b7280', marginTop: 4 },
   roleChips: { flexDirection: 'row', flexWrap: 'wrap' },
   roleChip: {
     borderWidth: 1,

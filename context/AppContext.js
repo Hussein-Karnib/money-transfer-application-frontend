@@ -1,564 +1,677 @@
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
-import { Alert } from 'react-native';
-import { basicEncrypt } from '../utils/security';
+// context/AppContext.js
 
-const AppContext = createContext();
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useCallback,
+} from 'react';
+import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  loadData,
+  saveData,
+  getUserByCredentials,
+  getUserById,
+  getUserTransactions,
+  getUserBeneficiaries,
+  getSupportTickets,
+  addToSection,
+  updateItemInSection,
+  removeFromSection,
+  updateDataSection,
+  getDataSection,
+  findItemInSection,
+} from '../utils/jsonStorage';
+
+const API_BASE_URL = 'http://192.168.10.175:8000/api';
 
 export const ROLE_CONFIG = {
-  user: {
-    label: 'Regular User',
-    permissions: [
-      'transfer_send',
-      'transfer_receive',
-      'history_view',
-      'beneficiary_manage',
-      'support_access',
-    ],
-  },
-  agent: {
-    label: 'Agent / Partner',
-    permissions: [
-      'cashin_manage',
-      'cashout_manage',
-      'commission_view',
-      'hours_manage',
-      'map_visibility',
-      'support_access',
-    ],
-  },
-  admin: {
-    label: 'Administrator',
-    permissions: [
-      'agent_approve',
-      'compliance_monitor',
-      'currency_manage',
-      'fee_manage',
-      'reporting_access',
-      'fraud_detection',
-    ],
-  },
+  user: { label: 'Customer' },
+  agent: { label: 'Agent' },
+  admin: { label: 'Admin' },
 };
 
-const FX_RATES = {
-  USD: 1,
-  EUR: 1.09,
-  GBP: 1.27,
-  KES: 0.0076,
-  PHP: 0.0176,
-};
+const AppContext = createContext(null);
 
-const CURRENCY_SYMBOLS = {
-  USD: '$',
-  EUR: '€',
-  GBP: '£',
-  KES: 'KES ',
-  PHP: '₱',
-};
-
-const TRANSFER_FEE_PERCENT = 0.0125;
-
-const INITIAL_TRANSACTIONS = [
-  {
-    id: 'TX-202501-0001',
-    type: 'received',
-    counterpart: 'FinPay Payroll',
-    amount: 1500,
-    currency: 'USD',
-    fxRate: FX_RATES.USD,
-    note: 'Monthly Salary',
-    timestamp: '2025-10-15T10:00:00.000Z',
-  },
-  {
-    id: 'TX-202501-0002',
-    type: 'sent',
-    counterpart: 'Jamie Lee',
-    amount: 120,
-    currency: 'USD',
-    fxRate: FX_RATES.USD,
-    note: 'Dinner refund',
-    timestamp: '2025-10-18T18:45:00.000Z',
-  },
-  {
-    id: 'TX-202501-0003',
-    type: 'received',
-    counterpart: 'Tasha Bank',
-    amount: 300,
-    currency: 'USD',
-    fxRate: FX_RATES.USD,
-    note: 'Cashback bonus',
-    timestamp: '2025-10-20T08:20:00.000Z',
-  },
-];
-
-const INITIAL_NOTIFICATIONS = [
-  'Account verified successfully',
-  'Security tip: Enable biometric authentication',
-  'Weekly summary ready to view',
-];
-
-const MOCK_SERVICES = [
-  {
-    id: 'SRV-1',
-    corridor: 'USA → Kenya',
-    speed: 'Instant',
-    fees: 2.5,
-    fxRate: 143.25,
-    payout: 'M-Pesa wallet',
-    promo: 'No fees for first transfer',
-  },
-  {
-    id: 'SRV-2',
-    corridor: 'UK → Philippines',
-    speed: 'Same day',
-    fees: 4.0,
-    fxRate: 72.12,
-    payout: 'Bank deposit',
-    promo: 'Earn 2% cashback',
-  },
-];
-
-const MOCK_BENEFICIARIES = [
-  { id: 'BN-10', name: 'Jamie Lee', country: 'Canada', method: 'Bank deposit', verified: true },
-  { id: 'BN-11', name: 'Amina Yusuf', country: 'Kenya', method: 'Mobile wallet', verified: false },
-];
-
-const MOCK_AGENTS = [
-  {
-    id: 'AG-21',
-    name: 'SwiftSend Downtown',
-    city: 'Nairobi',
-    hours: '08:00 - 20:00',
-    status: 'Open',
-    commissions: '1.5%',
-  },
-  {
-    id: 'AG-22',
-    name: 'PayPoint Lisbon',
-    city: 'Lisbon',
-    hours: '09:00 - 18:00',
-    status: 'Closed',
-    commissions: '1.8%',
-  },
-];
-
-const MOCK_KYC_USERS = [
-  {
-    id: 'KYC-001',
-    name: 'Sarah Johnson',
-    email: 'sarah.j@example.com',
-    phone: '+1 (555) 234-5678',
-    submittedDate: '2025-01-18',
-    status: 'Pending',
-    documentType: 'Passport',
-  },
-  {
-    id: 'KYC-002',
-    name: 'Michael Chen',
-    email: 'michael.c@example.com',
-    phone: '+44 20 7946 0958',
-    submittedDate: '2025-01-19',
-    status: 'Pending',
-    documentType: 'Driver License',
-  },
-  {
-    id: 'KYC-003',
-    name: 'Elena Rodriguez',
-    email: 'elena.r@example.com',
-    phone: '+34 91 123 4567',
-    submittedDate: '2025-01-15',
-    status: 'Approved',
-    documentType: 'National ID',
-  },
-  {
-    id: 'KYC-004',
-    name: 'David Kim',
-    email: 'david.k@example.com',
-    phone: '+82 2 1234 5678',
-    submittedDate: '2025-01-20',
-    status: 'Pending',
-    documentType: 'Passport',
-  },
-];
-
-const MOCK_FRAUD_ALERTS = [
-  {
-    id: 'FRAUD-001',
-    type: 'Unusual Pattern',
-    severity: 'High',
-    description: 'Multiple rapid transfers to new beneficiaries detected',
-    userId: 'MT-458211',
-    userName: 'John Smith',
-    transactionId: 'TX-202501-0045',
-    amount: 15000,
-    currency: 'USD',
-    flaggedAt: '2025-01-20T14:30:00.000Z',
-    status: 'Pending Review',
-    riskScore: 85,
-  },
-  {
-    id: 'FRAUD-002',
-    type: 'Amount Anomaly',
-    severity: 'Medium',
-    description: 'Transaction amount exceeds user average by 500%',
-    userId: 'MT-458212',
-    userName: 'Maria Garcia',
-    transactionId: 'TX-202501-0048',
-    amount: 5000,
-    currency: 'USD',
-    flaggedAt: '2025-01-20T11:15:00.000Z',
-    status: 'Under Investigation',
-    riskScore: 65,
-  },
-  {
-    id: 'FRAUD-003',
-    type: 'Geographic Mismatch',
-    severity: 'High',
-    description: 'Transfer initiated from new location with IP mismatch',
-    userId: 'MT-458213',
-    userName: 'Ahmed Hassan',
-    transactionId: 'TX-202501-0052',
-    amount: 8000,
-    currency: 'EUR',
-    flaggedAt: '2025-01-20T09:45:00.000Z',
-    status: 'Pending Review',
-    riskScore: 78,
-  },
-  {
-    id: 'FRAUD-004',
-    type: 'Device Change',
-    severity: 'Low',
-    description: 'New device detected for sensitive transaction',
-    userId: 'MT-458214',
-    userName: 'Lisa Wang',
-    transactionId: 'TX-202501-0055',
-    amount: 2500,
-    currency: 'GBP',
-    flaggedAt: '2025-01-19T16:20:00.000Z',
-    status: 'Resolved',
-    riskScore: 45,
-  },
-];
+// 🔹 Shared axios instance
+const api = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 10000,
+});
 
 export const AppProvider = ({ children }) => {
-  const [user, setUser] = useState({
-    name: 'Alex Doe',
-    email: 'alex.doe@example.com',
-    phone: '+1 (555) 123-4567',
-    id: 'MT-458210',
-    birthYear: 1996,
-  });
-  const [balance, setBalance] = useState(8250.75);
-  const [transactions, setTransactions] = useState(INITIAL_TRANSACTIONS);
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
-  const [supportTickets, setSupportTickets] = useState([]);
+  const [user, setUser] = useState(null);
   const [role, setRole] = useState('user');
-  const [services, setServices] = useState(MOCK_SERVICES);
-  const [beneficiaries, setBeneficiaries] = useState(MOCK_BENEFICIARIES);
-  const [agents, setAgents] = useState(MOCK_AGENTS);
-  const [kycUsers, setKycUsers] = useState(MOCK_KYC_USERS);
-  const [fraudAlerts, setFraudAlerts] = useState(MOCK_FRAUD_ALERTS);
+  const [authToken, setAuthToken] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  const getFxRate = useCallback((currency) => FX_RATES[currency] || 1, []);
+  const [transactions, setTransactions] = useState([]);
+  const [notifications, setNotifications] = useState([
+    'Welcome to SwiftSend mobile app.',
+  ]);
+  const [beneficiaries, setBeneficiaries] = useState([]);
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [kycSubmissions, setKycSubmissions] = useState([]);
+  const [fraudAlerts, setFraudAlerts] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [balance, setBalance] = useState(0);
 
-  const convertToBase = useCallback(
-    (amount, currency = 'USD') => {
-      const numeric = Number(amount);
-      if (Number.isNaN(numeric)) return 0;
-      return numeric * getFxRate(currency);
-    },
-    [getFxRate],
-  );
-
-  const formatCurrency = useCallback((amount, currency = 'USD') => {
-    const numeric = Number(amount) || 0;
-    const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
-    return `${symbol}${numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  }, []);
-
-  const appendNotification = useCallback((message) => {
-    setNotifications((prev) => [message, ...prev].slice(0, 25));
-  }, []);
-
-  const buildTransaction = useCallback((payload) => {
-    const encryptedPayload = basicEncrypt(payload);
-    return {
-      id: `TX-${Date.now()}`,
-      encryptedPayload,
-      ...payload,
-    };
-  }, []);
-
-  const sendMoney = useCallback(
-    ({ counterpart, amount, note, currency = 'USD' }) => {
-      const numericAmount = Number(amount);
-      if (!counterpart?.trim()) {
-        throw new Error('Recipient information is required');
-      }
-      if (Number.isNaN(numericAmount)) {
-        throw new Error('Amount must be a valid number');
-      }
-      if (numericAmount <= 0) {
-        throw new Error('Amount must be greater than zero');
-      }
-      const fxRate = getFxRate(currency);
-      const amountInBase = numericAmount * fxRate;
-      const fee = amountInBase * TRANSFER_FEE_PERCENT;
-      const totalDebit = amountInBase + fee;
-      if (totalDebit > balance) {
-        throw new Error('Insufficient balance after fees');
-      }
-
-      const transaction = buildTransaction({
-        type: 'sent',
-        counterpart: counterpart.trim(),
-        amount: numericAmount,
-        baseAmount: amountInBase,
-        currency,
-        fxRate,
-        fee,
-        note: note?.trim() || '',
-        timestamp: new Date().toISOString(),
-      });
-
-      setBalance((prev) => prev - totalDebit);
-      setTransactions((prev) => [transaction, ...prev]);
-      appendNotification(
-        `You sent ${formatCurrency(numericAmount, currency)} to ${transaction.counterpart} (fee ${formatCurrency(
-          fee,
-          'USD',
-        )})`,
-      );
-
-      return transaction;
-    },
-    [appendNotification, balance, buildTransaction, formatCurrency, getFxRate],
-  );
-
-  const receiveMoney = useCallback(
-    ({ counterpart, amount, note, currency = 'USD' }) => {
-      const numericAmount = Number(amount);
-      if (Number.isNaN(numericAmount) || numericAmount <= 0) {
-        throw new Error('Amount must be greater than zero');
-      }
-      const fxRate = getFxRate(currency);
-      const amountInBase = numericAmount * fxRate;
-
-      const transaction = buildTransaction({
-        type: 'received',
-        counterpart: counterpart?.trim() || 'Unknown Sender',
-        amount: numericAmount,
-        baseAmount: amountInBase,
-        currency,
-        fxRate,
-        note: note?.trim() || '',
-        timestamp: new Date().toISOString(),
-      });
-
-      setBalance((prev) => prev + amountInBase);
-      setTransactions((prev) => [transaction, ...prev]);
-      appendNotification(`You received ${formatCurrency(numericAmount, currency)} from ${transaction.counterpart}`);
-
-      return transaction;
-    },
-    [appendNotification, buildTransaction, formatCurrency, getFxRate],
-  );
-
-  const requestMoney = useCallback(
-    ({ counterpart, amount, note }) => {
-      const numericAmount = Number(amount);
-      if (!counterpart?.trim()) {
-        throw new Error('Requester information is required');
-      }
-      if (Number.isNaN(numericAmount) || numericAmount <= 0) {
-        throw new Error('Amount must be greater than zero');
-      }
-
-      const encryptedPayload = basicEncrypt({ counterpart, amount: numericAmount, note });
-      const requestId = `RQ-${Date.now()}`;
-      appendNotification(`Money request (${requestId}) sent to ${counterpart.trim()}`);
-
-      return { requestId, encryptedPayload };
-    },
-    [appendNotification],
-  );
-
-  const submitSupportTicket = useCallback(({ name, email, message }) => {
-    if (!name?.trim() || !email?.trim() || !message?.trim()) {
-      throw new Error('All fields are required');
+  // 🔹 Keep axios Authorization header in sync
+  useEffect(() => {
+    if (authToken) {
+      api.defaults.headers.common.Authorization = `Bearer ${authToken}`;
+    } else {
+      delete api.defaults.headers.common.Authorization;
     }
-    const ticket = {
-      id: `SUP-${supportTickets.length + 1}`,
-      name: name.trim(),
-      email: email.trim(),
-      message: message.trim(),
+  }, [authToken]);
+
+  // --- Bootstrap from JSON storage on app start ---
+  useEffect(() => {
+    const bootstrap = async () => {
+      try {
+        // Load data from JSON storage
+        const data = await loadData();
+        
+        // Load stored auth state
+        const storedToken = await AsyncStorage.getItem('authToken');
+        const storedRole = await AsyncStorage.getItem('role');
+        const storedUserId = await AsyncStorage.getItem('userId');
+
+        if (storedToken && storedUserId) {
+          setAuthToken(storedToken);
+          if (storedRole) setRole(storedRole);
+          
+          // Load user from JSON data
+          const userData = await getUserById(storedUserId);
+          if (userData) {
+            setUser(userData);
+            setBalance(userData.balance || 0);
+            
+            // Load user-specific data
+            const userTx = await getUserTransactions(storedUserId);
+            setTransactions(userTx);
+            
+            const userBens = await getUserBeneficiaries(storedUserId);
+            setBeneficiaries(userBens);
+          }
+        }
+
+        // Load global data (for admin/agent)
+        const allTickets = await getDataSection('supportTickets');
+        setSupportTickets(allTickets);
+        
+        const allKyc = await getDataSection('kycSubmissions');
+        setKycSubmissions(allKyc);
+        
+        const allFraud = await getDataSection('fraudAlerts');
+        setFraudAlerts(allFraud);
+        
+        const allAgents = await getDataSection('agents');
+        setAgents(allAgents);
+        
+        const allNotifications = await getDataSection('notifications');
+        if (allNotifications && allNotifications.length > 0) {
+          setNotifications(allNotifications);
+        }
+      } catch (e) {
+        console.log('Bootstrap error', e.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    bootstrap();
+  }, []);
+
+  // --- Auth functions ---
+
+  const login = async (email, password) => {
+    try {
+      // Try JSON storage first - find user by email
+      const users = await getDataSection('users');
+      const userData = users.find((u) => u.email === email);
+      
+      if (userData) {
+        // For demo: accept any password if email matches
+        // In production, verify password hash
+        const token = `token_${Date.now()}_${userData.id}`;
+        
+        setAuthToken(token);
+        setUser(userData);
+        setBalance(userData.balance || 0);
+        setRole(userData.role || 'user');
+
+        await AsyncStorage.setItem('authToken', token);
+        await AsyncStorage.setItem('role', userData.role || 'user');
+        await AsyncStorage.setItem('userId', userData.id);
+
+        // Load user data
+        const userTx = await getUserTransactions(userData.id);
+        setTransactions(userTx);
+        
+        const userBens = await getUserBeneficiaries(userData.id);
+        setBeneficiaries(userBens);
+
+        setNotifications((prev) => [
+          `Logged in as ${userData.name}`,
+          ...prev.slice(0, 24),
+        ]);
+
+        return { success: true, user: userData, token };
+      }
+
+      // Fallback to API if JSON storage doesn't have user
+      try {
+        const res = await api.post('/auth/login', { email, password });
+        const token = res.data.token;
+        const backendUser = res.data.user;
+
+        setAuthToken(token);
+        setUser(backendUser);
+        setBalance(backendUser.balance || 0);
+        await AsyncStorage.setItem('authToken', token);
+        await AsyncStorage.setItem('role', backendUser.role || role);
+        await AsyncStorage.setItem('userId', backendUser.id);
+
+        setNotifications((prev) => [
+          `Logged in as ${backendUser.name}`,
+          ...prev.slice(0, 24),
+        ]);
+
+        return { success: true, user: backendUser, token };
+      } catch (apiError) {
+        throw new Error('Login failed. Please check your email / password.');
+      }
+    } catch (error) {
+      console.log('Login error', error.message);
+      throw error;
+    }
+  };
+
+  const registerAndLogin = async ({ name, email, password, phone }) => {
+    try {
+      // Create new user in JSON storage
+      const newUser = {
+        id: `MT-${Date.now()}`,
+        name: name.trim(),
+        email: email.trim(),
+        phone: phone.trim(),
+        password: password, // In production, hash this
+        birthYear: new Date().getFullYear() - 25,
+        balance: 0,
+        role: 'user',
+        kycStatus: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+
+      // Add user to JSON storage
+      await addToSection('users', newUser);
+
+      const token = `token_${Date.now()}_${newUser.id}`;
+      
+      setAuthToken(token);
+      setUser(newUser);
+      setBalance(0);
+      setRole('user');
+
+      await AsyncStorage.setItem('authToken', token);
+      await AsyncStorage.setItem('role', 'user');
+      await AsyncStorage.setItem('userId', newUser.id);
+
+      setNotifications((prev) => [
+        `Welcome ${newUser.name}!`,
+        ...prev.slice(0, 24),
+      ]);
+
+      return { success: true, user: newUser, token };
+    } catch (error) {
+      console.log('Register error', error.message);
+      throw new Error('Sign up failed. Please check your info.');
+    }
+  };
+
+  const signOut = async () => {
+    try {
+      if (authToken) {
+        try {
+          await api.post('/auth/logout');
+        } catch (error) {
+          // Ignore API logout errors
+        }
+      }
+    } finally {
+      setUser(null);
+      setAuthToken(null);
+      setRole('user');
+      setBalance(0);
+      setTransactions([]);
+      setBeneficiaries([]);
+      await AsyncStorage.multiRemove(['authToken', 'role', 'userId']);
+    }
+  };
+
+  const switchRole = (newRole) => {
+    setRole(newRole);
+    AsyncStorage.setItem('role', newRole).catch(() => {});
+  };
+
+  // Format currency helper
+  const formatCurrency = (amount, currency = 'USD') => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  };
+
+  // --- Shared data fetchers using JSON storage ---
+
+  const loadBeneficiaries = useCallback(async () => {
+    if (!user?.id) return [];
+    
+    try {
+      const userBens = await getUserBeneficiaries(user.id);
+      setBeneficiaries(userBens);
+      return userBens;
+    } catch (error) {
+      console.error('Error loading beneficiaries:', error);
+      return [];
+    }
+  }, [user?.id]);
+
+  const fetchBeneficiaries = loadBeneficiaries;
+
+  const fetchUserAccounts = async () => {
+    // Return user's account info from JSON
+    if (!user) return [];
+    return [{
+      id: user.id,
+      account_number: user.id,
+      balance: user.balance || 0,
+      currency_code: 'USD',
+    }];
+  };
+
+  const fetchUserTransactions = useCallback(async () => {
+    if (!user?.id) {
+      setTransactions([]);
+      return [];
+    }
+    
+    try {
+      const userTx = await getUserTransactions(user.id);
+      setTransactions(userTx);
+      return userTx;
+    } catch (error) {
+      console.error('Error loading transactions:', error);
+      setTransactions([]);
+      return [];
+    }
+  }, [user?.id]);
+
+  const createTransfer = useCallback(async (payload) => {
+    if (!user?.id) {
+      throw new Error('User must be logged in');
+    }
+
+    const { amount, currency = 'USD', beneficiary_id, note = '' } = payload;
+    const numericAmount = Number(amount);
+    
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      throw new Error('Invalid amount');
+    }
+
+    // Get beneficiary
+    const beneficiary = await getUserBeneficiaries(user.id).then(bens => 
+      bens.find(b => b.id === beneficiary_id)
+    );
+    
+    if (!beneficiary) {
+      throw new Error('Beneficiary not found');
+    }
+
+    // Check balance
+    if (numericAmount > (user.balance || 0)) {
+      throw new Error('Insufficient balance');
+    }
+
+    // Calculate fee (1.25%)
+    const fee = numericAmount * 0.0125;
+    const totalAmount = numericAmount + fee;
+
+    if (totalAmount > (user.balance || 0)) {
+      throw new Error('Insufficient balance after fees');
+    }
+
+    // Create transaction
+    const transaction = {
+      id: `TX-${Date.now()}`,
+      senderId: user.id,
+      recipientId: beneficiary_id,
+      type: 'sent',
+      counterpart: beneficiary.name,
+      amount: numericAmount,
+      currency,
+      fxRate: 1.0,
+      fee,
+      note: note.trim(),
+      status: 'completed',
       timestamp: new Date().toISOString(),
     };
-    setSupportTickets((prev) => [ticket, ...prev]);
-    appendNotification('Support has received your latest request');
-    return ticket;
-  }, [appendNotification, supportTickets.length]);
 
-  const signOut = useCallback(() => {
-    setUser({
-      name: 'Alex Doe',
-      email: 'alex.doe@example.com',
-      phone: '+1 (555) 123-4567',
-      id: 'MT-458210',
-      birthYear: 1996,
+    // Save transaction to JSON
+    await addToSection('transactions', transaction);
+
+    // Update user balance
+    const updatedUser = await updateItemInSection('users', user.id, {
+      balance: (user.balance || 0) - totalAmount,
     });
-    setBalance(8250.75);
-    setTransactions(INITIAL_TRANSACTIONS);
-    setNotifications(INITIAL_NOTIFICATIONS);
-    setSupportTickets([]);
-    setRole('user');
-  }, []);
 
-  const signIn = useCallback(
-    ({ name, email }) => {
-      setUser((prev) => ({
-        ...prev,
-        name: name?.trim() || prev.name,
-        email: email?.trim() || prev.email,
-      }));
-      appendNotification('Login successful. Welcome back!');
-    },
-    [appendNotification],
-  );
-
-  const switchRole = useCallback(
-    (nextRole) => {
-      if (!ROLE_CONFIG[nextRole]) {
-        throw new Error('Unsupported role selected');
-      }
-      setRole(nextRole);
-      appendNotification(`Role updated to ${ROLE_CONFIG[nextRole].label}`);
-    },
-    [appendNotification],
-  );
-
-  const addBeneficiary = useCallback(({ name, country, method }) => {
-    if (!name?.trim() || !country?.trim() || !method?.trim()) {
-      throw new Error('Beneficiary name, country, and payout method are required');
+    if (updatedUser) {
+      setUser(updatedUser);
+      setBalance(updatedUser.balance);
     }
-    const beneficiary = {
-      id: `BN-${Date.now()}`,
-      name: name.trim(),
-      country: country.trim(),
-      method: method.trim(),
-      verified: false,
-    };
-    setBeneficiaries((prev) => [beneficiary, ...prev]);
-    appendNotification(`Beneficiary ${beneficiary.name} added, awaiting verification`);
-    return beneficiary;
-  }, [appendNotification]);
 
-  const updateAgentStatus = useCallback(({ id, status }) => {
-    setAgents((prev) =>
-      prev.map((agent) => (agent.id === id ? { ...agent, status } : agent)),
-    );
+    // Refresh transactions
+    await fetchUserTransactions();
+
+    // Add notification
+    setNotifications((prev) => [
+      `You sent ${currency} ${numericAmount.toFixed(2)} to ${beneficiary.name}`,
+      ...prev.slice(0, 24),
+    ]);
+
+    return transaction;
+  }, [user, fetchUserTransactions]);
+
+  const addBeneficiary = useCallback(async (beneficiaryData) => {
+    if (!user?.id) {
+      throw new Error('User must be logged in');
+    }
+
+    const newBeneficiary = {
+      id: `BN-${Date.now()}`,
+      userId: user.id,
+      name: beneficiaryData.name.trim(),
+      country: beneficiaryData.country.trim(),
+      method: beneficiaryData.method.trim(),
+      verified: false,
+      createdAt: new Date().toISOString(),
+    };
+
+    await addToSection('beneficiaries', newBeneficiary);
+    await loadBeneficiaries();
+
+    setNotifications((prev) => [
+      `Beneficiary ${newBeneficiary.name} added`,
+      ...prev.slice(0, 24),
+    ]);
+
+    return newBeneficiary;
+  }, [user?.id, loadBeneficiaries]);
+
+  const submitSupportTicket = useCallback(async (ticketData) => {
+    if (!user?.id) {
+      throw new Error('User must be logged in');
+    }
+
+    const newTicket = {
+      id: `SUP-${Date.now()}`,
+      userId: user.id,
+      name: ticketData.name.trim(),
+      email: ticketData.email.trim(),
+      message: ticketData.message.trim(),
+      status: 'open',
+      timestamp: new Date().toISOString(),
+    };
+
+    await addToSection('supportTickets', newTicket);
+    
+    // Refresh tickets
+    const allTickets = await getDataSection('supportTickets');
+    setSupportTickets(allTickets);
+
+    setNotifications((prev) => [
+      'Support ticket submitted successfully',
+      ...prev.slice(0, 24),
+    ]);
+
+    return newTicket;
+  }, [user?.id]);
+
+  const updateKycStatus = useCallback(async (id, status) => {
+    // Get the KYC submission to find the userId
+    const kycSubmission = await findItemInSection('kycSubmissions', id);
+    if (!kycSubmission) {
+      throw new Error('KYC submission not found');
+    }
+
+    // Update the KYC submission status
+    const updated = await updateItemInSection('kycSubmissions', id, { status });
+    if (updated) {
+      // Update the user's kycStatus in the users array
+      if (kycSubmission.userId) {
+        const userKycStatus = status === 'Approved' ? 'approved' : status === 'Rejected' ? 'rejected' : 'pending';
+        await updateItemInSection('users', kycSubmission.userId, { kycStatus: userKycStatus });
+      }
+
+      // Refresh KYC submissions list
+      const allKyc = await getDataSection('kycSubmissions');
+      setKycSubmissions(allKyc);
+    }
+    return updated;
   }, []);
 
-  const updateKycStatus = useCallback(({ id, status }) => {
-    setKycUsers((prev) =>
-      prev.map((user) => (user.id === id ? { ...user, status } : user)),
-    );
-    appendNotification(`KYC status updated to ${status} for user ${id}`);
-  }, [appendNotification]);
+  const updateFraudAlertStatus = useCallback(async (id, status) => {
+    const updated = await updateItemInSection('fraudAlerts', id, { status });
+    if (updated) {
+      const allFraud = await getDataSection('fraudAlerts');
+      setFraudAlerts(allFraud);
+    }
+    return updated;
+  }, []);
 
-  const updateFraudAlertStatus = useCallback(({ id, status }) => {
-    setFraudAlerts((prev) =>
-      prev.map((alert) => (alert.id === id ? { ...alert, status } : alert)),
-    );
-    appendNotification(`Fraud alert ${id} status updated to ${status}`);
-  }, [appendNotification]);
+  const updateAgent = useCallback(async (id, updates) => {
+    const updated = await updateItemInSection('agents', id, updates);
+    if (updated) {
+      const allAgents = await getDataSection('agents');
+      setAgents(allAgents);
+    }
+    return updated;
+  }, []);
 
+  const receiveMoney = useCallback(async ({ counterpart, amount, note = '', currency = 'USD' }) => {
+    if (!user?.id) {
+      throw new Error('User must be logged in');
+    }
+
+    const numericAmount = Number(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      throw new Error('Amount must be greater than zero');
+    }
+
+    // Create received transaction
+    const transaction = {
+      id: `TX-${Date.now()}`,
+      senderId: 'SYSTEM',
+      recipientId: user.id,
+      type: 'received',
+      counterpart: counterpart.trim() || 'Unknown sender',
+      amount: numericAmount,
+      currency,
+      fxRate: 1.0,
+      fee: 0,
+      note: note.trim(),
+      status: 'completed',
+      timestamp: new Date().toISOString(),
+    };
+
+    // Save transaction to JSON
+    await addToSection('transactions', transaction);
+
+    // Update user balance
+    const updatedUser = await updateItemInSection('users', user.id, {
+      balance: (user.balance || 0) + numericAmount,
+    });
+
+    if (updatedUser) {
+      setUser(updatedUser);
+      setBalance(updatedUser.balance);
+    }
+
+    // Refresh transactions
+    await fetchUserTransactions();
+
+    // Add notification
+    setNotifications((prev) => [
+      `You received ${currency} ${numericAmount.toFixed(2)} from ${transaction.counterpart}`,
+      ...prev.slice(0, 24),
+    ]);
+
+    return transaction;
+  }, [user, fetchUserTransactions]);
+
+  const requestMoney = useCallback(async ({ counterpart, amount, note = '' }) => {
+    if (!user?.id) {
+      throw new Error('User must be logged in');
+    }
+
+    const numericAmount = Number(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      throw new Error('Amount must be greater than zero');
+    }
+
+    const requestId = `RQ-${Date.now()}`;
+
+    // Add notification
+    setNotifications((prev) => [
+      `Money request (${requestId}) sent to ${counterpart.trim()}`,
+      ...prev.slice(0, 24),
+    ]);
+
+    return { requestId, counterpart: counterpart.trim(), amount: numericAmount, note: note.trim() };
+  }, [user]);
+
+  // Generate report function
   const generateReport = useCallback((reportType, startDate, endDate) => {
-    // Mock report generation - in real app, this would call an API
     const reportId = `RPT-${Date.now()}`;
-    appendNotification(`Report ${reportId} generated for ${reportType}`);
+    const stats = {
+      totalTransactions: transactions.length,
+      totalAmount: transactions.reduce((sum, t) => sum + (t.amount || 0), 0),
+      pendingKyc: kycSubmissions.filter((u) => u.status === 'Pending').length,
+      activeFraudAlerts: fraudAlerts.filter((a) => a.status !== 'Resolved').length,
+      totalAgents: agents.length,
+      openTickets: supportTickets.length,
+    };
+
     return {
       id: reportId,
       type: reportType,
       startDate,
       endDate,
       generatedAt: new Date().toISOString(),
+      stats,
       data: {
-        totalTransactions: transactions.length,
-        totalAmount: transactions.reduce((sum, t) => sum + (t.amount || 0), 0),
-        fraudAlerts: fraudAlerts.length,
-        pendingKyc: kycUsers.filter((u) => u.status === 'Pending').length,
+        transactions: transactions.filter((t) => {
+          const txDate = new Date(t.timestamp);
+          return txDate >= new Date(startDate) && txDate <= new Date(endDate);
+        }),
+        fraudAlerts: fraudAlerts.filter((a) => {
+          const alertDate = new Date(a.flaggedAt);
+          return alertDate >= new Date(startDate) && alertDate <= new Date(endDate);
+        }),
+        kycSubmissions: kycSubmissions.filter((k) => {
+          const kycDate = new Date(k.submittedDate || k.createdAt);
+          return kycDate >= new Date(startDate) && kycDate <= new Date(endDate);
+        }),
       },
     };
-  }, [appendNotification, transactions, fraudAlerts, kycUsers]);
+  }, [transactions, kycSubmissions, fraudAlerts, agents, supportTickets]);
+
+  // Legacy
+  const signIn = (fakeUser) => {
+    setUser(fakeUser);
+  };
 
   const value = useMemo(
     () => ({
       user,
-      balance,
+      role,
+      authToken,
+      loading,
       transactions,
       notifications,
-      supportTickets,
-      role,
-      services,
       beneficiaries,
-      agents,
-      kycUsers,
+      supportTickets,
+      kycSubmissions,
       fraudAlerts,
-      fxRates: FX_RATES,
-      transferFeePercent: TRANSFER_FEE_PERCENT,
-      formatCurrency,
-      convertToBase,
-      sendMoney,
-      receiveMoney,
-      requestMoney,
-      submitSupportTicket,
-      signIn,
+      agents,
+      balance,
+      // axios instance, useful in screens:
+      api,
+      // auth
+      login,
+      registerAndLogin,
+      signOut,
       switchRole,
+      // data helpers
+      fetchBeneficiaries,
+      loadBeneficiaries,
+      fetchUserAccounts,
+      fetchUserTransactions,
+      createTransfer,
       addBeneficiary,
-      updateAgentStatus,
+      submitSupportTicket,
       updateKycStatus,
       updateFraudAlertStatus,
+      updateAgent,
+      receiveMoney,
+      requestMoney,
+      formatCurrency,
       generateReport,
-      signOut,
-      ROLE_CONFIG,
+      // legacy
+      signIn,
+      API_BASE_URL,
     }),
     [
-      balance,
-      beneficiaries,
-      agents,
-      kycUsers,
-      fraudAlerts,
-      notifications,
-      receiveMoney,
-      requestMoney,
-      role,
-      sendMoney,
-      signIn,
-      submitSupportTicket,
-      supportTickets,
-      transactions,
-      services,
       user,
+      role,
+      authToken,
+      loading,
+      transactions,
+      notifications,
+      beneficiaries,
+      supportTickets,
+      kycSubmissions,
+      fraudAlerts,
+      agents,
+      balance,
+      loadBeneficiaries,
+      fetchUserTransactions,
+      createTransfer,
       addBeneficiary,
-      switchRole,
-      updateAgentStatus,
+      submitSupportTicket,
       updateKycStatus,
       updateFraudAlertStatus,
-      generateReport,
-      convertToBase,
+      updateAgent,
+      receiveMoney,
+      requestMoney,
       formatCurrency,
-    ],
+      generateReport,
+    ]
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
 
 export const useAppContext = () => {
-  const context = useContext(AppContext);
-  if (!context) {
-    Alert.alert('Context unavailable', 'AppContext must be used within AppProvider');
-    throw new Error('useAppContext must be used within AppProvider');
+  const ctx = useContext(AppContext);
+  if (!ctx) {
+    throw new Error('useAppContext must be used inside AppProvider');
   }
-  return context;
+  return ctx;
 };
-

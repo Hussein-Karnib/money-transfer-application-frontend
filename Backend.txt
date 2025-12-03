@@ -1,0 +1,5972 @@
+\app\Http\Controllers\Api\AgentHourApiController.php
+
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Agent;
+use App\Models\Agent_Hour;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+
+class AgentHourApiController extends Controller
+{
+    /**
+     * Return the weekly schedule for a given agent.
+     */
+    public function show(Agent $agent): JsonResponse
+    {
+        $agent->loadMissing('hours');
+
+        return response()->json([
+            'success' => true,
+            'data' => $this->formatSchedule($agent),
+        ]);
+    }
+
+    /**
+     * Update the weekly schedule for the authenticated agent (or admin).
+     */
+    public function update(Request $request, Agent $agent): JsonResponse
+    {
+        $this->ensureCanModify($agent);
+
+        $validator = Validator::make($request->all(), [
+            'hours' => ['required', 'array', 'size:7'],
+            'hours.*.day' => ['required', 'integer', 'between:0,6', 'distinct'],
+            'hours.*.is_closed' => ['sometimes', 'boolean'],
+            'hours.*.open_time' => ['nullable', 'date_format:H:i'],
+            'hours.*.close_time' => ['nullable', 'date_format:H:i'],
+        ]);
+
+        $validator->after(function ($validator) {
+            $hours = $validator->getData()['hours'] ?? [];
+
+            foreach ($hours as $index => $hour) {
+                $isClosed = (bool)($hour['is_closed'] ?? false);
+
+                if (! $isClosed) {
+                    if (empty($hour['open_time']) || empty($hour['close_time'])) {
+                        $validator->errors()->add("hours.$index.open_time", 'Open and close times are required when a day is open.');
+                        continue;
+                    }
+
+                    if ($hour['close_time'] <= $hour['open_time']) {
+                        $validator->errors()->add("hours.$index.close_time", 'Close time must be later than open time.');
+                    }
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        DB::transaction(function () use ($validated, $agent) {
+            $byDay = collect($validated['hours'])->keyBy(fn ($entry) => (int) $entry['day']);
+
+            foreach (range(0, 6) as $day) {
+                $entry = $byDay->get($day, ['is_closed' => true]);
+                $isClosed = (bool)($entry['is_closed'] ?? false);
+
+                Agent_Hour::updateOrCreate(
+                    [
+                        'agent_id' => $agent->id,
+                        'day_of_week' => $day,
+                    ],
+                    [
+                        'open_time' => $isClosed ? null : $entry['open_time'],
+                        'close_time' => $isClosed ? null : $entry['close_time'],
+                        'is_closed' => $isClosed,
+                    ]
+                );
+            }
+        });
+
+        $agent->load('hours');
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Working hours updated successfully.',
+            'data' => $this->formatSchedule($agent),
+        ]);
+    }
+
+    /**
+     * Ensure the authenticated user can modify the agent.
+     */
+    protected function ensureCanModify(Agent $agent): void
+    {
+        $user = Auth::user();
+
+        if (! $user) {
+            abort(401, 'Authentication required.');
+        }
+
+        if ($user->id === $agent->user_id) {
+            return;
+        }
+
+        if ($user->role && $user->role->name === 'admin') {
+            return;
+        }
+
+        abort(403, 'You are not allowed to update these hours.');
+    }
+
+    /**
+     * Build a normalized 7-day schedule for API responses.
+     */
+    protected function formatSchedule(Agent $agent): array
+    {
+        $agent->loadMissing('hours');
+        $hours = $agent->hours->keyBy('day_of_week');
+
+        $days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+        return collect(range(0, 6))->map(function ($day) use ($hours, $days) {
+            $entry = $hours->get($day);
+
+            return [
+                'day' => $day,
+                'label' => $days[$day],
+                'is_closed' => $entry ? (bool) $entry->is_closed : true,
+                'open_time' => $entry ? $entry->open_time : null,
+                'close_time' => $entry ? $entry->close_time : null,
+            ];
+        })->all();
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\Api\AgentTransactionApiController.php
+
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Agent;
+use App\Models\Agent_Transaction;
+use App\Models\Transfer;
+use App\Models\Transfer_Event;
+use App\Support\NotificationHelper;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+
+class AgentTransactionApiController extends Controller
+{
+    /**
+     * Return all transactions processed by the given agent.
+     */
+    public function index(Request $request, Agent $agent): JsonResponse
+    {
+        $this->authorizeForView($agent);
+
+        $transactions = $agent->transactions()
+            ->with('transfer')
+            ->latest('processed_at')
+            ->get()
+            ->map(fn (Agent_Transaction $transaction) => $this->formatTransaction($transaction));
+
+        return response()->json([
+            'success' => true,
+            'data' => $transactions,
+            'count' => $transactions->count(),
+        ]);
+    }
+
+    /**
+     * Process a cash-in or cash-out operation at an agent location.
+     */
+    public function process(Request $request, Agent $agent): JsonResponse
+    {
+        $this->authorizeForProcessing($agent);
+
+        if ($agent->status !== 'approved') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Agent is not approved to process transactions.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'transfer_reference' => ['required', 'string', 'exists:transfers,reference'],
+            'type' => ['required', 'in:cash_in,cash_out'],
+        ]);
+
+        $transfer = Transfer::where('reference', $validated['transfer_reference'])->firstOrFail();
+
+        if (! $this->canHandleTransfer($transfer, $validated['type'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Transfer cannot be processed in its current state.',
+                'transfer_status' => $transfer->status,
+            ], 409);
+        }
+
+        if ($this->alreadyProcessed($transfer, $validated['type'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This transfer was already processed for the requested operation.',
+            ], 409);
+        }
+
+        $commissionRate = $agent->commission_rate ?? 0.01;
+        $commission = round($transfer->amount * $commissionRate, 2);
+        $newStatus = $validated['type'] === 'cash_out' ? 'completed' : 'available_for_pickup';
+        $processedAt = now();
+
+        $transaction = DB::transaction(function () use (
+            $agent,
+            $transfer,
+            $validated,
+            $commission,
+            $newStatus,
+            $processedAt
+        ) {
+            $agentTransaction = Agent_Transaction::create([
+                'agent_id' => $agent->id,
+                'transfer_id' => $transfer->id,
+                'type' => $validated['type'],
+                'amount' => $transfer->amount,
+                'commission' => $commission,
+                'processed_at' => $processedAt,
+            ]);
+
+            $transfer->update([
+                'status' => $newStatus,
+                'completed_at' => $validated['type'] === 'cash_out' ? $processedAt : null,
+            ]);
+
+            Transfer_Event::create([
+                'transfer_id' => $transfer->id,
+                'status' => $newStatus,
+                'note' => sprintf(
+                    'Agent %s processed %s (reference %s)',
+                    $agent->store_name,
+                    $validated['type'],
+                    $transfer->reference
+                ),
+                'actor_type' => 'agent',
+                'actor_id' => $agent->id,
+            ]);
+
+            return $agentTransaction->load('transfer');
+        });
+
+        // Person 4: send user-facing notifications
+        if ($validated['type'] === 'cash_out') {
+            NotificationHelper::transferCashedOut($transfer);
+        } elseif ($validated['type'] === 'cash_in' && $newStatus === 'available_for_pickup') {
+            NotificationHelper::transferReadyForPickup($transfer);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer processed successfully.',
+            'data' => $this->formatTransaction($transaction),
+        ]);
+    }
+
+    protected function authorizeForView(Agent $agent): void
+    {
+        $user = Auth::user();
+
+        if (! $user) {
+            abort(401, 'Authentication required.');
+        }
+
+        if ($user->id === $agent->user_id) {
+            return;
+        }
+
+        if ($user->role && $user->role->name === 'admin') {
+            return;
+        }
+
+        abort(403, 'You are not allowed to view these transactions.');
+    }
+
+    protected function authorizeForProcessing(Agent $agent): void
+    {
+        $user = Auth::user();
+
+        if (! $user) {
+            abort(401, 'Authentication required.');
+        }
+
+        if ($user->id === $agent->user_id) {
+            return;
+        }
+
+        abort(403, 'Only the agent owner can process transactions.');
+    }
+
+    protected function canHandleTransfer(Transfer $transfer, string $type): bool
+    {
+        if ($type === 'cash_out') {
+            return $transfer->status === 'available_for_pickup';
+        }
+
+        return in_array($transfer->status, ['queued', 'paid'], true);
+    }
+
+    protected function alreadyProcessed(Transfer $transfer, string $type): bool
+    {
+        if ($type === 'cash_out' && $transfer->status === 'completed') {
+            return true;
+        }
+
+        if ($type === 'cash_in' && $transfer->status === 'available_for_pickup') {
+            return true;
+        }
+
+        return Agent_Transaction::where('transfer_id', $transfer->id)
+            ->where('type', $type)
+            ->exists();
+    }
+
+    protected function formatTransaction(Agent_Transaction $transaction): array
+    {
+        $transfer = $transaction->transfer;
+
+        return [
+            'id' => $transaction->id,
+            'type' => $transaction->type,
+            'amount' => (float) $transaction->amount,
+            'commission' => (float) $transaction->commission,
+            'processed_at' => optional($transaction->processed_at)->toIso8601String(),
+            'transfer' => [
+                'id' => $transfer->id ?? null,
+                'reference' => $transfer->reference ?? null,
+                'status' => $transfer->status ?? null,
+                'completed_at' => $transfer?->completed_at ? $transfer->completed_at->toIso8601String() : null,
+            ],
+        ];
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\AdminController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Admin;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rules;
+
+class AdminController extends Controller
+{
+    /**
+     * Display a listing of the admins.
+     */
+    public function index()
+    {
+        // Eager load the 'user' relationship to display names and emails
+        $admins = Admin::with('user')->paginate(10);
+
+        // If using an API: return response()->json($admins);
+        // If using Blade:
+        return view('admin.manage_admins.index', compact('admins'));
+    }
+
+    /**
+     * Show the form for creating a new admin.
+     */
+    public function create()
+    {
+        return view('admin.manage_admins.create');
+    }
+
+    /**
+     * Store a newly created Admin and the associated User account.
+     * using a DB Transaction to ensure data integrity.
+     */
+    public function store(Request $request)
+    {
+        // 1. Validate both User details and Admin details
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
+            'password' => ['required', 'confirmed', Rules\Password::defaults()],
+            'privilege_level' => ['required', 'integer', 'min:1', 'max:5'], // Assuming 1-5 levels
+        ]);
+
+        // 2. Use a Transaction: If creating the Admin fails, the User won't be created either.
+        DB::transaction(function () use ($validated) {
+            
+            // A. Create the User
+            $user = User::create([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                // You might want to set a 'role_id' here if you are using the Roles table from your schema
+                // 'role_id' => 1 // e.g., 1 for Admin
+            ]);
+
+            // B. Create the Admin entry linked to that User
+            Admin::create([
+                'user_id' => $user->id,
+                'privilege_level' => $validated['privilege_level'],
+            ]);
+        });
+
+        return redirect()->route('admins.index')->with('success', 'New Admin created successfully.');
+    }
+
+    /**
+     * Display the specified admin.
+     */
+    public function show(Admin $admin)
+    {
+        $admin->load('user');
+        return view('admin.manage_admins.show', compact('admin'));
+    }
+
+    /**
+     * Show the form for editing the specified admin.
+     */
+    public function edit(Admin $admin)
+    {
+        return view('admin.manage_admins.edit', compact('admin'));
+    }
+
+    /**
+     * Update the specified admin in storage.
+     */
+    public function update(Request $request, Admin $admin)
+    {
+        $validated = $request->validate([
+            'privilege_level' => ['required', 'integer', 'min:1', 'max:5'],
+        ]);
+
+        $admin->update([
+            'privilege_level' => $validated['privilege_level'],
+        ]);
+
+        return redirect()->route('admins.index')->with('success', 'Admin privileges updated.');
+    }
+
+    /**
+     * Remove the specified admin from storage.
+     * Note: This removes Admin privileges, but usually keeps the User account.
+     */
+    public function destroy(Admin $admin)
+    {
+        // Option A: Delete ONLY the admin record (Demote to regular user)
+        $admin->delete();
+
+        // Option B: Delete the User entirely (Uncomment if desired)
+        // $admin->user->delete(); 
+
+        return redirect()->route('admins.index')->with('success', 'Admin privileges revoked.');
+    }
+}
+
+
+
+\app\Http\Controllers\AgentController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Agent;
+use App\Models\User;
+use App\Support\NotificationHelper;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rules;
+use App\Http\Controllers\AuditLogController;
+
+class AgentController extends Controller
+{
+    /**
+     * Display a listing of agents.
+     * Useful for the "Map" feature (returning JSON) or Admin list.
+     */
+    public function index(Request $request)
+    {
+        // Filter by status (e.g., Admin wants to see 'pending' agents)
+        $query = Agent::with('user');
+
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Return JSON for the Map if requested via API
+        if ($request->wantsJson()) {
+            return response()->json($query->get());
+        }
+
+        $agents = $query->paginate(10);
+        return view('agents.index', compact('agents'));
+    }
+
+    /**
+     * Show the registration form for a new Agent.
+     */
+    public function create()
+    {
+        return view('agents.register');
+    }
+
+    /**
+     * Handle the registration of a new Agent.
+     * Creates both the User account and the Agent profile.
+     */
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            // User Fields
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
+            'password' => ['required', 'confirmed', Rules\Password::defaults()],
+            
+            // Agent Specific Fields
+            'store_name' => ['required', 'string', 'max:255'],
+            'address' => ['required', 'string', 'max:500'],
+            'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+            'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+        ]);
+
+        DB::transaction(function () use ($validated) {
+            // 1. Create the User Account
+            $user = User::create([
+                'name' => $validated['name'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                // 'role_id' => 2 // Assuming 2 is for Agents
+            ]);
+
+            // 2. Create the Agent Profile (Status defaults to 'pending')
+            $agent = Agent::create([
+                'user_id' => $user->id,
+                'store_name' => $validated['store_name'],
+                'address' => $validated['address'],
+                'latitude' => $validated['latitude'] ?? null,
+                'longitude' => $validated['longitude'] ?? null,
+                'status' => 'pending', 
+            ]);
+
+            AuditLogController::logSystemAction(
+                $user->id,
+                'create_agent',
+                'agents',
+                $agent->id,
+                ['store_name' => $agent->store_name]
+            );
+        });
+
+        return redirect()->route('login')->with('success', 'Registration successful! Your account is pending admin approval.');
+    }
+
+    /**
+     * Display specific agent details (Profile page).
+     */
+    public function show(Agent $agent)
+    {
+        $agent->load(['user', 'hours']); // Load working hours if available
+        return view('agents.show', compact('agent'));
+    }
+
+    /**
+     * Show form to edit agent details (Address, Store Name).
+     */
+    public function edit(Agent $agent)
+    {
+        // Ensure only the agent themselves or an Admin can edit
+        // $this->authorize('update', $agent); 
+        
+        return view('agents.edit', compact('agent'));
+    }
+
+    /**
+     * Update agent profile information.
+     */
+    public function update(Request $request, Agent $agent)
+    {
+        $validated = $request->validate([
+            'store_name' => 'required|string|max:255',
+            'address' => 'required|string|max:500',
+            'latitude' => 'nullable|numeric',
+            'longitude' => 'nullable|numeric',
+        ]);
+
+        $agent->update($validated);
+
+        AuditLogController::logSystemAction(
+            Auth::id(),
+            'update_agent',
+            'agents',
+            $agent->id,
+            ['changes' => $validated]
+        );
+
+        return redirect()->route('agents.show', $agent)->with('success', 'Store details updated.');
+    }
+
+    /**
+     * Admin Action: Approve or Suspend an agent.
+     */
+    public function updateStatus(Request $request, Agent $agent)
+    {
+        // $this->authorize('adminAction', Agent::class); // Security check
+
+        $request->validate([
+            'status' => 'required|in:approved,suspended,pending',
+        ]);
+
+        $agent->update(['status' => $request->status]);
+
+        // Notify agent about status change (Person 4 helper)
+        NotificationHelper::agentStatusChanged($agent->fresh('user'), $request->status);
+
+        return back()->with('success', "Agent status updated to {$request->status}.");
+    }
+
+    /**
+     * Remove the agent profile.
+     */
+    public function destroy(Agent $agent)
+    {
+        // Optional: Delete the associated user as well?
+        $agent->delete();
+        return redirect()->route('agents.index')->with('success', 'Agent deleted.');
+    }
+
+    /**
+     * Public API endpoint for agent map.
+     * Returns approved agents with location data, optionally filtered by distance and open status.
+     */
+    public function map(Request $request)
+    {
+        $query = Agent::with(['user', 'hours'])
+            ->where('status', 'approved') // Only show approved agents
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude');
+
+        // Filter by distance if latitude, longitude, and radius provided
+        if ($request->has('latitude') && $request->has('longitude') && $request->has('radius')) {
+            $lat = $request->latitude;
+            $lng = $request->longitude;
+            $radius = $request->radius; // in kilometers
+
+            // Haversine formula for distance calculation
+            $query->selectRaw('*, (
+                6371 * acos(
+                    cos(radians(?)) * cos(radians(latitude)) *
+                    cos(radians(longitude) - radians(?)) +
+                    sin(radians(?)) * sin(radians(latitude))
+                )
+            ) AS distance', [$lat, $lng, $lat])
+            ->havingRaw('distance < ?', [$radius])
+            ->orderBy('distance');
+        }
+
+        // Filter by currently open agents
+        if ($request->boolean('open_now')) {
+            $currentDay = now()->dayOfWeek; // 0 = Sunday, 6 = Saturday
+            $currentTime = now()->format('H:i:s');
+
+            $query->whereHas('hours', function ($q) use ($currentDay, $currentTime) {
+                $q->where('day_of_week', $currentDay)
+                  ->where('is_closed', false)
+                  ->where('open_time', '<=', $currentTime)
+                  ->where('close_time', '>=', $currentTime);
+            });
+        }
+
+        $agents = $query->get()->map(function ($agent) {
+            return [
+                'id' => $agent->id,
+                'store_name' => $agent->store_name,
+                'address' => $agent->address,
+                'latitude' => (float) $agent->latitude,
+                'longitude' => (float) $agent->longitude,
+                'owner_name' => $agent->user->name,
+                'hours' => $agent->hours->map(function ($hour) {
+                    $days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+                    return [
+                        'day' => $days[$hour->day_of_week],
+                        'day_of_week' => $hour->day_of_week,
+                        'open_time' => $hour->open_time,
+                        'close_time' => $hour->close_time,
+                        'is_closed' => $hour->is_closed,
+                    ];
+                }),
+                'distance' => $agent->distance ?? null,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => $agents,
+            'count' => $agents->count(),
+        ]);
+    }
+
+    /**
+     * Display commission report for an agent.
+     */
+    public function commissions(Request $request, Agent $agent)
+    {
+        // Security: Ensure the logged-in user owns this agent profile
+        if (Auth::id() !== $agent->user_id) {
+            abort(403, 'Unauthorized access to commission records.');
+        }
+
+        $query = $agent->transactions();
+
+        // Filter by date range if provided
+        if ($request->has('from')) {
+            $query->whereDate('processed_at', '>=', $request->from);
+        }
+        if ($request->has('to')) {
+            $query->whereDate('processed_at', '<=', $request->to);
+        }
+
+        $transactions = $query->with('transfer')
+            ->latest('processed_at')
+            ->paginate(20);
+
+        // Calculate totals
+        $totalCommission = $agent->transactions()->sum('commission');
+        $monthlyCommission = $agent->transactions()
+            ->whereYear('processed_at', now()->year)
+            ->whereMonth('processed_at', now()->month)
+            ->sum('commission');
+        $todayCommission = $agent->transactions()
+            ->whereDate('processed_at', today())
+            ->sum('commission');
+
+        // Filtered totals
+        $filteredCommission = $query->sum('commission');
+
+        return view('portal.commissions', compact(
+            'agent',
+            'transactions',
+            'totalCommission',
+            'monthlyCommission',
+            'todayCommission',
+            'filteredCommission'
+        ));
+    }
+}
+
+
+
+\app\Http\Controllers\AgentHourController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Agent;
+use App\Models\Agent_Hour;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
+
+class AgentHourController extends Controller
+{
+    /**
+     * Display the working hours for a specific agent.
+     */
+    public function index(Agent $agent)
+    {
+        // Get hours ordered by day of week (0 = Sunday, 1 = Monday, etc.)
+        $hours = $agent->hours()->orderBy('day_of_week')->get();
+        
+        // Helper to map integers to day names
+        $days = [
+            0 => 'Sunday', 1 => 'Monday', 2 => 'Tuesday', 
+            3 => 'Wednesday', 4 => 'Thursday', 5 => 'Friday', 6 => 'Saturday'
+        ];
+
+        return view('agents.hours.index', compact('agent', 'hours', 'days'));
+    }
+
+    /**
+     * Show the form for editing working hours.
+     */
+    public function edit(Agent $agent)
+    {
+        // $this->authorize('update', $agent); // Ensure user owns this agent profile
+
+        // Key the collection by 'day_of_week' for easy lookup in the view
+        $hours = $agent->hours->keyBy('day_of_week');
+        
+        $days = [
+            0 => 'Sunday', 1 => 'Monday', 2 => 'Tuesday', 
+            3 => 'Wednesday', 4 => 'Thursday', 5 => 'Friday', 6 => 'Saturday'
+        ];
+
+        return view('agents.hours.edit', compact('agent', 'hours', 'days'));
+    }
+
+    /**
+     * Update or Create working hours for the week.
+     * Expects an array of hours indexed by day_of_week.
+     */
+    public function update(Request $request, Agent $agent)
+    {
+        // Validation: Expecting an array 'hours' where key is day (0-6)
+        $validator = Validator::make($request->all(), [
+            'hours' => 'required|array',
+            'hours.*.open_time' => 'nullable|date_format:H:i',
+            'hours.*.close_time' => 'nullable|date_format:H:i',
+            'hours.*.enabled' => 'nullable|boolean',
+        ]);
+
+        $validator->after(function ($validator) {
+            $hours = $validator->getData()['hours'] ?? [];
+
+            foreach ($hours as $day => $times) {
+                $enabled = filter_var($times['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+                if ($enabled) {
+                    if (empty($times['open_time']) || empty($times['close_time'])) {
+                        $validator->errors()->add("hours.$day.open_time", 'Open and close times are required when enabled.');
+                        continue;
+                    }
+
+                    if ($times['close_time'] <= $times['open_time']) {
+                        $validator->errors()->add("hours.$day.close_time", 'Close time must be later than open time.');
+                    }
+                }
+            }
+        });
+
+        $validated = $validator->validate();
+
+        DB::transaction(function () use ($agent, $validated) {
+            foreach (range(0, 6) as $day) {
+                $times = $validated['hours'][$day] ?? null;
+                $enabled = $times ? filter_var($times['enabled'] ?? false, FILTER_VALIDATE_BOOLEAN) : false;
+
+                Agent_Hour::updateOrCreate(
+                    [
+                        'agent_id' => $agent->id,
+                        'day_of_week' => $day,
+                    ],
+                    [
+                        'open_time' => $enabled ? $times['open_time'] : null,
+                        'close_time' => $enabled ? $times['close_time'] : null,
+                        'is_closed' => !$enabled,
+                    ]
+                );
+            }
+        });
+
+        return redirect()->route('agents.hours.index', $agent)
+                         ->with('success', 'Working hours updated successfully.');
+    }
+}
+
+
+
+
+\app\Http\Controllers\AgentTransactionController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Agent;
+use App\Models\Agent_Transaction;
+use App\Models\Transfer;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
+
+class AgentTransactionController extends Controller
+{
+    /**
+     * Display a history of transactions for a specific agent.
+     */
+    public function index(Agent $agent)
+    {
+        // Security: Ensure the logged-in user owns this agent profile
+        if (Auth::id() !== $agent->user_id) {
+            abort(403, 'Unauthorized access to store records.');
+        }
+
+        $transactions = $agent->transactions()
+            ->with('transfer') // Load transfer details
+            ->latest('processed_at')
+            ->paginate(15);
+
+        return view('portal.transactions.index', compact('agent', 'transactions'));
+    }
+
+    /**
+     * Show the form to process a generic transaction (Cash In or Out).
+     */
+    public function create(Agent $agent)
+    {
+        return view('portal.transactions.create', compact('agent'));
+    }
+
+    /**
+     * Store (Process) a new transaction.
+     * This handles the logic of finding the transfer and marking it as paid/received.
+     */
+    public function store(Request $request, Agent $agent)
+    {
+        // Security: Ensure the logged-in user owns this agent profile
+        if (Auth::id() !== $agent->user_id) {
+            abort(403, 'Unauthorized access to store records.');
+        }
+
+        $validated = $request->validate([
+            'transfer_reference' => 'required|string|exists:transfers,reference',
+            'type' => 'required|in:cash_in,cash_out',
+        ]);
+
+        // Find the transfer
+        $transfer = Transfer::where('reference', $validated['transfer_reference'])->firstOrFail();
+
+        // LOGIC CHECKS
+        if ($validated['type'] === 'cash_out') {
+            // Rule: Can only cash out if status is 'available_for_pickup'
+            if ($transfer->status !== 'available_for_pickup') {
+                return back()->withErrors(['transfer_reference' => 'This transfer is not ready for pickup yet.']);
+            }
+        } elseif ($validated['type'] === 'cash_in') {
+            // Rule: Can only cash in if status is 'queued' or 'paid'
+            if (!in_array($transfer->status, ['queued', 'paid'])) {
+                return back()->withErrors(['transfer_reference' => 'This transfer cannot be processed for cash-in.']);
+            }
+        }
+
+        // Calculate Commission (can be made configurable per agent or system-wide)
+        $commissionRate = $agent->commission_rate ?? 0.01; // Default 1%, can be overridden per agent
+        $commission = $transfer->amount * $commissionRate;
+
+        DB::transaction(function () use ($agent, $transfer, $validated, $commission) {
+            
+            // 1. Create the Agent Transaction Record
+            Agent_Transaction::create([
+                'agent_id' => $agent->id,
+                'transfer_id' => $transfer->id,
+                'type' => $validated['type'],
+                'amount' => $transfer->amount,
+                'commission' => $commission,
+                'processed_at' => now(),
+            ]);
+
+            // 2. Update the Main Transfer Status
+            if ($validated['type'] === 'cash_out') {
+                $transfer->update(['status' => 'completed']);
+            } elseif ($validated['type'] === 'cash_in') {
+                $transfer->update(['status' => 'in_progress']);
+            }
+            
+            // Optional: Create an Audit Log here (via helper/observer)
+        });
+
+        return redirect()->route('portal.transactions.index', $agent)
+            ->with('success', 'Transaction processed successfully. Commission earned: ' . number_format($commission, 2));
+    }
+
+    /**
+     * Display details of a specific agent transaction.
+     */
+    public function show(Agent $agent, Agent_Transaction $transaction)
+    {
+        // Ensure the transaction belongs to this agent
+        if ($transaction->agent_id !== $agent->id) {
+            abort(403);
+        }
+
+        return view('portal.transactions.show', compact('agent', 'transaction'));
+    }
+}
+
+
+
+
+\app\Http\Controllers\AuditLogController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\AuditLog;
+use Illuminate\Http\Request;
+
+class AuditLogController extends Controller
+{
+    /**
+     * Display a listing of the audit logs.
+     * Includes filtering options for the Admin.
+     */
+    public function index(Request $request)
+    {
+        $query = AuditLog::with('user')->latest();
+
+        if ($request->filled('action')) {
+            $query->where('action', 'like', '%' . $request->action . '%');
+        }
+
+        if ($request->filled('user_id')) {
+            $query->where('user_id', $request->user_id);
+        }
+
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+
+        if ($request->filled('date_to')) {
+            $query->whereDate('created_at', '<=', $request->date_to);
+        }
+
+        $data = $query->get();
+
+        return view('admin.auditTable', ['data' => $data]);
+    }
+
+    /**
+     * Display the specified audit log details.
+     * Useful for inspecting the 'metadata' JSON column.
+     */
+    public function show($id)
+    {
+        $data = AuditLog::with('user')->findOrFail($id);
+
+        return view('admin.auditShow', ['data' => $data]);
+    }
+
+    /**
+     * Remove logs older than a specific date (Maintenance/Pruning).
+     */
+    public function prune(Request $request)
+    {
+        $request->validate([
+            'days_retention' => 'required|integer|min:30', // keep at least 30 days
+        ]);
+
+        $date = now()->subDays($request->days_retention);
+
+        $deletedCount = AuditLog::where('created_at', '<', $date)->delete();
+
+        return redirect()->route('admin.auditTable')
+            ->with('success', "Pruned $deletedCount logs older than {$request->days_retention} days.");
+    }
+
+    /**
+     * Static helper to log an action from anywhere.
+     */
+    public static function logSystemAction(
+        ?int $user_id,
+        string $action,
+        ?string $table_name = null,
+        ?int $record_id = null,
+        array $data = []
+    ): void {
+        AuditLog::create([
+            'user_id'    => $user_id,
+            'actor_type' => 'system',        // or 'user'/'admin' if you want to extend this
+            'actor_id'   => $user_id,
+            'action'     => $action,
+            'table_name' => $table_name,
+            'record_id'  => $record_id,
+            'metadata'   => $data,
+            'created_at' => now(),
+        ]);
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\AuthController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use App\Models\Role;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
+
+
+class AuthController extends Controller
+{
+    
+     public function register(Request $request)
+    {
+       
+        $data = $request->validate([
+            'name'     => ['required', 'string', 'max:255'],
+            'email'    => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
+            'password' => ['required', 'string', 'min:8'],
+        ]);
+
+        // Get the "User" role – this is the ONLY role allowed via public register
+        $userRole = Role::where('name', 'User')->firstOrFail();
+
+        $user = User::create([
+            'name'     => $data['name'],
+            'email'    => $data['email'],
+            'password' => Hash::make($data['password']),
+            'role_id'  => $userRole->id, 
+        ]);
+
+        // If you're using Sanctum:
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'success' => true,
+            'message' => 'User registered successfully.',
+            'data'    => [
+                'user'  => $user,
+                'token' => $token,
+            ],
+        ], 201);
+    }
+    public function login(Request $request)
+    {
+        $data = $request->validate([
+            'email'    => ['required', 'email'],
+            'password' => ['required', 'string'],
+        ]);
+
+        $user = User::where('email', $data['email'])->first();
+
+        if (! $user || ! Hash::check($data['password'], $user->password)) {
+            throw ValidationException::withMessages([
+                'email' => ['The provided credentials are incorrect.'],
+            ]);
+        }
+        
+        $user->tokens()->delete();
+
+        $token = $user->createToken('mobile')->plainTextToken;
+
+        return response()->json([
+            'user'  => $user,
+            'token' => $token,
+        ]);
+    }
+
+    public function me(Request $request)
+    {
+        return response()->json($request->user());
+    }
+
+    public function logout(Request $request)
+    {
+        $request->user()->currentAccessToken()->delete();
+
+        return response()->json([
+            'message' => 'Logged out.',
+        ]);
+    }
+
+    public function logoutAll(Request $request)
+    {
+        $request->user()->tokens()->delete();
+
+        return response()->json([
+            'message' => 'Logged out from all devices.',
+        ]);
+    }
+
+
+    public function socialLogin(Request $request)
+    {
+        $data = $request->validate([
+            'provider'    => 'required|in:google,facebook,apple',
+            'provider_id' => 'required|string',
+            'name'        => 'required|string|max:255',
+            'email'       => 'nullable|email',
+            'avatar'      => 'nullable|string',
+        ]);
+    
+        $user = User::where('provider_name', $data['provider'])
+            ->where('provider_id', $data['provider_id'])
+            ->first();
+    
+        if (!$user && !empty($data['email'])) {
+            $user = User::where('email', $data['email'])->first();
+        }
+    
+        if (!$user) {
+            $user = User::create([
+                'name'          => $data['name'],
+                'email'         => $data['email'] ?? null,
+                'password'      => null, 
+                'role_id'       => 3,    
+                'status'        => 'active',
+                'provider_name' => $data['provider'],
+                'provider_id'   => $data['provider_id'],
+                'avatar_url'    => $data['avatar'] ?? null,
+            ]);
+        } else {
+            $user->update([
+                'name'          => $data['name'],
+                'provider_name' => $data['provider'],
+                'provider_id'   => $data['provider_id'],
+                'avatar_url'    => $data['avatar'] ?? $user->avatar_url,
+                'status'        => $user->status ?: 'active',
+            ]);
+        }
+    
+        $token = $user->createToken('api')->plainTextToken;
+    
+        return response()->json([
+            'user'  => $user,
+            'token' => $token,
+        ]);
+    }
+
+}
+
+
+
+
+
+\app\Http\Controllers\BeneficiaryController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Beneficiary;
+use App\Models\Country;
+use App\Models\Transfer_Method;
+use App\Models\UserBankAccount;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use App\Http\Controllers\AuditLogController;
+
+/*
+ Example payout_details for bank transfer:
+ {
+   "type": "iban",
+   "iban": "LB62099900000001001101234567",
+   "country_iso2": "LB",
+   "bank_account_id": 3
+ }
+
+ Example payout_details for card transfer:
+ {
+   "type": "card",
+   "brand": "mastercard",
+   "last4": "2345",
+   "masked": "5123 **** **** 2345",
+   "bank_account_id": 3
+ }
+*/
+class BeneficiaryController extends Controller
+{
+    public function index(): JsonResponse
+    {
+        $beneficiaries = Beneficiary::where('user_id', Auth::id())
+            ->with(['country', 'method'])
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $beneficiaries,
+        ]);
+    }
+
+    /*
+      Store a new beneficiary
+
+      Supported body examples:
+
+      1) Using explicit account / IBAN:
+      {
+        "full_name": "John Doe",
+        "country_id": 1,
+        "transfer_method_id": 3,   // e.g. "Bank Transfer"
+        "payout_details": {
+          "account_number": "LB62099900000001001101234567"
+        }
+      }
+
+      2) Using an already-created bank account:
+      {
+        "full_name": "John Doe",
+        "country_id": 1,
+        "transfer_method_id": 7,   // e.g. "Card-to-Card Transfer"
+        "bank_account_id": 3
+      }
+     */
+   public function store(Request $request): JsonResponse
+{
+    $data = $request->validate([
+        'full_name'           => ['required', 'string', 'max:255'],
+        'country_id'          => ['required', 'integer', 'exists:countries,id'],
+        'transfer_method_id'  => ['required', 'integer', 'exists:transfer_methods,id'],
+
+        'bank_account_id'     => ['nullable', 'integer', 'exists:user_bank_accounts,id'],
+
+        // generic payout_details object (optional)
+        'payout_details'                => ['nullable', 'array'],
+        'payout_details.account_number' => ['nullable', 'string', 'max:100'],
+
+        // optional shortcuts – front-end is NOT forced to send these
+        'card_number'                   => ['nullable', 'string', 'max:30'],
+        'iban'                          => ['nullable', 'string', 'max:50'],
+    ]);
+
+    $userId  = Auth::id();
+    $country = Country::findOrFail($data['country_id']);
+    $method  = Transfer_Method::findOrFail($data['transfer_method_id']);
+
+    $methodName = strtolower($method->name);
+
+    // --------------------------------------------------
+    // BASE DETAILS FROM SENDER BANK ACCOUNT (USER)
+    // --------------------------------------------------
+    $baseDetails = [];
+    $bankAccount = null;
+
+    if (!empty($data['bank_account_id'])) {
+        $bankAccount = UserBankAccount::where('id', $data['bank_account_id'])
+            ->where('user_id', $userId)
+            ->firstOrFail();
+
+        // IMPORTANT:
+        // This is the SENDER account, not the receiver.
+        // We do NOT copy its account_number to the receiver.
+        $baseDetails = [
+            'bank_account_id' => $bankAccount->id,
+            'bank_name'       => $bankAccount->bank_name,
+            'currency_code'   => $bankAccount->currency_code,
+        ];
+    }
+
+    // --------------------------------------------------
+    // BUILD PAYOUT DETAILS PER METHOD TYPE
+    // --------------------------------------------------
+    $payoutDetails = [];
+
+    // =============== CARD METHODS ======================
+    if (str_contains($methodName, 'card')) {
+        // receiver card number:
+        // 1) if frontend sends card_number (for testing)
+        // 2) otherwise AUTO-GENERATE
+        $accountNumber = null;
+
+        if (!empty($data['card_number'])) {
+            $accountNumber = $data['card_number'];
+        } else {
+            // AUTO generate for receiver, no user input needed
+            $accountNumber = $this->generateCardNumber();
+        }
+
+        $digits = preg_replace('/\D/', '', $accountNumber);
+
+        if (!$this->isValidCardNumber($digits)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid card number generated or provided.',
+            ], 422);
+        }
+
+        $brand = $this->detectCardBrand($digits) ?? 'unknown';
+        $last4 = substr($digits, -4);
+
+        $payoutDetails = array_merge($baseDetails, [
+            'type'        => 'card',
+            // full PAN stored only for our project logic
+            'card_number' => $digits,
+            'brand'       => $brand,
+            'last4'       => $last4,
+            'masked'      => substr($digits, 0, 4) . ' **** **** ' . $last4,
+        ]);
+    }
+
+    // =============== BANK / IBAN METHODS ==============
+    elseif (str_contains($methodName, 'bank')) {
+
+        $ibanCountries = ['LB','DE','FR','GB','ES','IT','NL','BE','CH','TR','SA','QA','AE'];
+
+        // Receiver account (IBAN or local)
+        $accountNumber = null;
+
+        // 1) explicit IBAN in "iban" field
+        if (!empty($data['iban'])) {
+            $accountNumber = $data['iban'];
+        }
+        // 2) explicit account_number inside payout_details (for manual/testing)
+        elseif (!empty($data['payout_details']['account_number'])) {
+            $accountNumber = $data['payout_details']['account_number'];
+        }
+        // 3) if still empty → AUTO-GENERATE IBAN-like
+        else {
+            $accountNumber = $this->generateIbanForCountry($country->iso2);
+        }
+
+        $accountNumber = strtoupper(str_replace(' ', '', $accountNumber));
+
+        if (in_array($country->iso2, $ibanCountries)) {
+            if (!$this->isValidIBAN($accountNumber, $country->iso2)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid IBAN for country ' . $country->iso2 . '.',
+                ], 422);
+            }
+
+            $payoutDetails = array_merge($baseDetails, [
+                'type'         => 'iban',
+                'iban'         => $accountNumber,
+                'country_iso2' => $country->iso2,
+            ]);
+        } else {
+            // Non-IBAN country
+            $payoutDetails = array_merge($baseDetails, [
+                'type'           => 'local_account',
+                'account_number' => $accountNumber,
+                'country_iso2'   => $country->iso2,
+            ]);
+        }
+    }
+
+    // =============== OTHER METHODS ====================
+    // Cash pickup, mobile wallet, ATM, etc.
+    else {
+        // Here we don't force an account_number at all.
+        // We just merge whatever extra was sent plus the sender bank info.
+        $extra = $data['payout_details'] ?? [];
+
+        $payoutDetails = array_merge($baseDetails, $extra);
+        // Example final structure:
+        // {
+        //   "bank_account_id": 4,
+        //   "bank_name": "beirut_bank",
+        //   "currency_code": "USD",
+        //   "wallet_number": "...",
+        //   "pickup_location": "..."
+        // }
+    }
+
+    // --------------------------------------------------
+    // CREATE BENEFICIARY
+    // --------------------------------------------------
+    $beneficiary = Beneficiary::create([
+        'user_id'            => $userId,
+        'full_name'          => $data['full_name'],
+        'country_id'         => $data['country_id'],
+        'transfer_method_id' => $data['transfer_method_id'],
+        'payout_details'     => $payoutDetails,
+    ]);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Beneficiary added successfully',
+        'data'    => $beneficiary->load(['country', 'method']),
+    ], 201);
+}
+
+
+
+    public function destroy(int $id): JsonResponse
+    {
+        $beneficiary = Beneficiary::where('id', $id)
+            ->where('user_id', Auth::id())
+            ->firstOrFail();
+
+        $beneficiary->delete();
+
+        AuditLogController::logSystemAction(
+            Auth::id(),
+            'delete_beneficiary',
+            'beneficiaries',
+            $id,
+            []
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Beneficiary deleted successfully',
+        ]);
+    }
+
+    // =========================================================
+    //  IBAN + CARD HELPERS
+    // =========================================================
+
+    private function isValidIBAN(string $iban, ?string $countryIso2 = null): bool
+    {
+        $iban = strtoupper(str_replace(' ', '', $iban));
+
+        // 1) Basic char rules
+        if (!preg_match('/^[A-Z0-9]+$/', $iban)) {
+            return false;
+        }
+
+        // 2) Basic length rules
+        if (strlen($iban) < 15 || strlen($iban) > 34) {
+            return false;
+        }
+
+        // 3) Country-specific length rules (if we know the country)
+        $countryIso2 = strtoupper($countryIso2 ?? '');
+        $lengthMap = [
+            'LB' => 28,
+            'DE' => 22,
+            'FR' => 27,
+            'GB' => 22,
+            'ES' => 24,
+            'IT' => 27,
+            'NL' => 18,
+            'BE' => 16,
+            'CH' => 21,
+            'TR' => 26,
+            'SA' => 24,
+            'QA' => 29,
+            'AE' => 23,
+        ];
+
+        if ($countryIso2 && isset($lengthMap[$countryIso2])) {
+            if (strlen($iban) !== $lengthMap[$countryIso2]) {
+                return false;
+            }
+        }
+
+        // 4) IBAN checksum mod 97 == 1
+        return $this->passesIbanChecksum($iban);
+    }
+
+    private function passesIbanChecksum(string $iban): bool
+    {
+        // Move first 4 chars to end
+        $rearranged = substr($iban, 4) . substr($iban, 0, 4);
+
+        // Replace letters with numbers: A=10, B=11, ..., Z=35
+        $numericString = '';
+        for ($i = 0; $i < strlen($rearranged); $i++) {
+            $c = $rearranged[$i];
+            if (ctype_alpha($c)) {
+                $numericString .= (ord($c) - 55); // A=10, B=11, ...
+            } else {
+                $numericString .= $c;
+            }
+        }
+
+        // Compute mod 97 iteratively (string may be very long)
+        $remainder = 0;
+        $len = strlen($numericString);
+        $block = '';
+
+        for ($i = 0; $i < $len; $i++) {
+            $block .= $numericString[$i];
+            // To avoid overflow, do mod when block grows
+            if (strlen($block) > 8) {
+                $remainder = intval($block) % 97;
+                $block = (string)$remainder;
+            }
+        }
+
+        if ($block !== '') {
+            $remainder = intval($block) % 97;
+        }
+
+        return $remainder === 1;
+    }
+
+    private function isValidCardNumber(string $number): bool
+    {
+        $number = preg_replace('/\D/', '', $number);
+
+        // Basic PAN length check (14–19 digits allowed generally, we restrict to 14–19)
+        if (strlen($number) < 14 || strlen($number) > 19) {
+            return false;
+        }
+
+        // Basic known patterns
+        $cardRegex =
+            '/^(4[0-9]{12}(?:[0-9]{3})?)$|' .            // Visa
+            '^(5[1-5][0-9]{14})$|' .                    // Mastercard (classic)
+            '^(3[47][0-9]{13})$|' .                     // American Express
+            '^(6(?:011|5[0-9]{2})[0-9]{12})$/';         // Discover
+
+        if (!preg_match($cardRegex, $number)) {
+            return false;
+        }
+
+        // Luhn checksum
+        return $this->luhnCheck($number);
+    }
+
+    private function luhnCheck(string $number): bool
+    {
+        $sum = 0;
+        $alt = false;
+
+        for ($i = strlen($number) - 1; $i >= 0; $i--) {
+            $n = intval($number[$i]);
+
+            if ($alt) {
+                $n *= 2;
+                if ($n > 9) {
+                    $n -= 9;
+                }
+            }
+
+            $sum += $n;
+            $alt = !$alt;
+        }
+
+        return ($sum % 10 === 0);
+    }
+
+    private function detectCardBrand(string $number): ?string
+    {
+        $number = preg_replace('/\D/', '', $number);
+
+        if (preg_match('/^4[0-9]{12}(?:[0-9]{3})?$/', $number)) {
+            return 'visa';
+        }
+
+        if (preg_match('/^5[1-5][0-9]{14}$/', $number)) {
+            return 'mastercard';
+        }
+
+        if (preg_match('/^3[47][0-9]{13}$/', $number)) {
+            return 'amex';
+        }
+
+        if (preg_match('/^6(?:011|5[0-9]{2})[0-9]{12}$/', $number)) {
+            return 'discover';
+        }
+
+        return null;
+    }
+
+    // =========================================================
+    //  AUTO GENERATORS (CARD + IBAN)
+    // =========================================================
+
+    /**
+     * Generate a random, Luhn-valid 16-digit Visa style card number.
+     * This is for DEMO purposes (you don't want real cards in dev).
+     */
+    private function generateCardNumber(): string
+    {
+        // Start with 15 digits (Visa usually starts with 4)
+        $digits = '4';
+        for ($i = 0; $i < 14; $i++) {
+            $digits .= random_int(0, 9);
+        }
+
+        // Compute Luhn check digit
+        $sum = 0;
+        $alt = true; // start doubling from the rightmost of the 15
+        for ($i = strlen($digits) - 1; $i >= 0; $i--) {
+            $n = intval($digits[$i]);
+            if ($alt) {
+                $n *= 2;
+                if ($n > 9) {
+                    $n -= 9;
+                }
+            }
+            $sum += $n;
+            $alt = !$alt;
+        }
+
+        $checkDigit = (10 - ($sum % 10)) % 10;
+
+        return $digits . $checkDigit;
+    }
+
+    /**
+     * Generate an IBAN-like string for a given country that passes the checksum.
+     * Not a real bank account, but structurally valid for demos.
+     */
+    private function generateIbanForCountry(string $countryIso2): string
+    {
+        $countryIso2 = strtoupper($countryIso2 ?: 'XX');
+
+        $lengthMap = [
+            'LB' => 28,
+            'DE' => 22,
+            'FR' => 27,
+            'GB' => 22,
+            'ES' => 24,
+            'IT' => 27,
+            'NL' => 18,
+            'BE' => 16,
+            'CH' => 21,
+            'TR' => 26,
+            'SA' => 24,
+            'QA' => 29,
+            'AE' => 23,
+        ];
+
+        // Default to 24 if country not in map
+        $totalLength = $lengthMap[$countryIso2] ?? 24;
+
+        // BBAN length = total - 4 (country + 2 check digits)
+        $bbanLength = $totalLength - 4;
+
+        $bban = '';
+        for ($i = 0; $i < $bbanLength; $i++) {
+            $bban .= random_int(0, 9);
+        }
+
+        // Temporary IBAN with '00' check digits
+        $tempIban = $countryIso2 . '00' . $bban;
+
+        // Rearrange as per IBAN rules
+        $rearranged = substr($tempIban, 4) . substr($tempIban, 0, 4);
+
+        // Convert to numeric string
+        $numericString = '';
+        for ($i = 0; $i < strlen($rearranged); $i++) {
+            $c = $rearranged[$i];
+            if (ctype_alpha($c)) {
+                $numericString .= (ord($c) - 55); // A=10...
+            } else {
+                $numericString .= $c;
+            }
+        }
+
+        // Compute mod 97
+        $remainder = 0;
+        $block = '';
+        $len = strlen($numericString);
+
+        for ($i = 0; $i < $len; $i++) {
+            $block .= $numericString[$i];
+            if (strlen($block) > 8) {
+                $remainder = intval($block) % 97;
+                $block = (string)$remainder;
+            }
+        }
+
+        if ($block !== '') {
+            $remainder = intval($block) % 97;
+        }
+
+        // Calculate check digits
+        $checkDigits = 98 - ($remainder % 97);
+        $checkDigitsStr = str_pad((string)$checkDigits, 2, '0', STR_PAD_LEFT);
+
+        return $countryIso2 . $checkDigitsStr . $bban;
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\CurrencyController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Currency;
+use App\Services\ExchangeRateService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class CurrencyController extends Controller
+{
+    public function __construct(
+        private ExchangeRateService $exchangeRateService
+    ) {}
+
+    
+     // Get all currencies
+     
+    public function index(): JsonResponse
+    {
+        $currencies = Currency::all();
+        
+        return response()->json([
+            'success' => true,
+            'data' => $currencies,
+        ]);
+    }
+
+    
+    public function show(string $code): JsonResponse
+    {
+        $currency = Currency::findOrFail($code);
+        
+        return response()->json([
+            'success' => true,
+            'data' => $currency,
+        ]);
+    }
+}
+
+
+
+
+
+
+\app\Http\Controllers\ExchangeRateController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Exchange_Rate;
+use App\Services\ExchangeRateService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class ExchangeRateController extends Controller
+{
+    private ExchangeRateService $exchangeRateService;
+
+    public function __construct(ExchangeRateService $exchangeRateService)
+    {
+        $this->exchangeRateService = $exchangeRateService;
+    }
+
+    public function index(Request $request): JsonResponse
+    {
+        $base = strtoupper($request->query('base', 'USD'));
+
+        // Check if we have fresh data (e.g. last 12 hours)
+        $hasFresh = Exchange_Rate::where('currency_from', $base)
+            ->where('last_updated', '>=', now()->subHours(12))
+            ->exists();
+
+        if (!$hasFresh) {
+            // Only hit the API when needed
+            $this->exchangeRateService->updateRatesForBase($base);
+        }
+
+        $rates = Exchange_Rate::where('currency_from', $base)
+            ->orderBy('currency_to')
+            ->get(['currency_from', 'currency_to', 'rate', 'last_updated']);
+
+        return response()->json([
+            'success'       => true,
+            'base_currency' => $base,
+            'data'          => $rates,
+        ]);
+    }
+
+    public function convert(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0',
+            'from'   => 'required|string|size:3',
+            'to'     => 'required|string|size:3',
+        ]);
+
+        $amount = (float) $validated['amount'];
+        $from   = strtoupper($validated['from']);
+        $to     = strtoupper($validated['to']);
+
+        $result = $this->exchangeRateService->convert($amount, $from, $to);
+
+        if ($result === null) {
+            return response()->json([
+                'success' => false,
+                'message' => "Unable to get exchange rate for {$from} → {$to}.",
+            ], 502);
+        }
+
+        $rate = $this->exchangeRateService->getRate($from, $to);
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'amount' => $amount,
+                'from'   => $from,
+                'to'     => $to,
+                'rate'   => $rate,
+                'result' => $result,
+            ],
+        ]);
+    }
+
+    public function show(string $from, string $to): JsonResponse
+    {
+        $from = strtoupper($from);
+        $to   = strtoupper($to);
+
+        $rate = $this->exchangeRateService->getRate($from, $to);
+
+        if ($rate === null) {
+            return response()->json([
+                'success' => false,
+                'message' => "Exchange rate not available for {$from} → {$to}.",
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'from' => $from,
+                'to'   => $to,
+                'rate' => $rate,
+            ],
+        ]);
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\PaymentController.php
+
+<?php 
+
+namespace App\Http\Controllers;
+
+use App\Models\Payment;
+use App\Models\Transfer;
+use App\Services\PaymentService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class PaymentController extends Controller
+{
+    /**
+     * Allowed payment gateways (string codes, NOT IDs).
+     *
+     * In a real app these map to different integrations:
+     * - stripe     → Stripe card payments
+     * - paypal     → PayPal checkout
+     * - checkout   → Checkout.com
+     * - dummy      → Fake gateway for dev/testing
+     * - card       → Generic card processor
+     */
+    private const ALLOWED_GATEWAYS = [
+        'stripe',
+        'paypal',
+        'checkout',
+        'dummy',
+        'card',
+        'test',
+    ];
+
+    public function __construct(
+        private PaymentService $paymentService
+    ) {}
+
+    /*
+      Request Body:
+      {
+        "transfer_id": 1,
+        "gateway": "stripe",       // must be one of ALLOWED_GATEWAYS
+        "gateway_ref": "ch_abc123" // optional, e.g. Stripe charge id
+      }
+    */
+    public function store(Request $request): JsonResponse
+    {
+        // Validate the input data
+        $validated = $request->validate([
+            'transfer_id' => ['required', 'integer', 'exists:transfers,id'],
+            'gateway'     => ['required', 'string', 'in:' . implode(',', self::ALLOWED_GATEWAYS)],
+            'gateway_ref' => ['nullable', 'string'],
+        ]);
+
+        // Make sure the transfer belongs to the current user
+        $transfer = Transfer::where('id', $validated['transfer_id'])
+            ->where('sender_id', Auth::id())
+            ->firstOrFail();
+
+        // Create the payment (status: authorized / pending depending on your service)
+        $payment = $this->paymentService->createPayment(
+            $validated['transfer_id'],
+            $validated
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment authorized successfully',
+            'data'    => $payment->load('transfer'),
+        ], 201);
+    }
+
+    public function show(int $id): JsonResponse
+    {
+        $payment = Payment::where('id', $id)
+            ->whereHas('transfer', function ($query) {
+                $query->where('sender_id', Auth::id());
+            })
+            ->with('transfer')
+            ->firstOrFail();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $payment,
+        ]);
+    }
+
+    /*
+      Captures an authorized payment. This moves the money from the customer's account
+      to your account. After capture, we should also move the transfer status
+      from "queued" → "completed" (for your project).
+    */
+    public function capture(int $id): JsonResponse
+    {
+        $payment = Payment::where('id', $id)
+            ->whereHas('transfer', function ($query) {
+                $query->where('sender_id', Auth::id());
+            })
+            ->firstOrFail();
+
+        // This should capture the payment AND update the transfer
+        $payment = $this->paymentService->capturePayment($id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment captured successfully',
+            'data'    => $payment->load('transfer'),
+        ]);
+    }
+
+    public function refund(int $id): JsonResponse
+    {
+        $payment = Payment::where('id', $id)
+            ->whereHas('transfer', function ($query) {
+                $query->where('sender_id', Auth::id());
+            })
+            ->firstOrFail();
+
+        $payment = $this->paymentService->refundPayment($id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment refunded successfully',
+            'data'    => $payment->load('transfer'),
+        ]);
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\ReportController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Report;
+use App\Models\Transfer; // Assuming you have this model based on schema
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Carbon\Carbon;
+
+class ReportController extends Controller
+{
+    /**
+     * Display a listing of the generated reports.
+     */
+    public function index()
+    {
+        // Show newest reports first
+        $reports = Report::with('author')->latest('generated_at')->paginate(10);
+        return view('admin.reports.index', compact('reports'));
+    }
+
+    /**
+     * Show the form for generating a new report.
+     */
+    public function create()
+    {
+        return view('admin.reports.create');
+    }
+
+    /**
+     * Handle the report generation logic.
+     */
+    public function store(Request $request)
+    {
+        $request->validate([
+            'type' => 'required|in:transactions,users,performance',
+            'start_date' => 'required|date',
+            'end_date' => 'required|date|after_or_equal:start_date',
+        ]);
+
+        $type = $request->type;
+        $startDate = Carbon::parse($request->start_date);
+        $endDate = Carbon::parse($request->end_date);
+
+        // 1. Fetch Data based on Type
+        $data = [];
+        if ($type === 'transactions') {
+            // Example: Fetch transfers within date range
+            // Note: Ensure Transfer model exists or replace with DB query
+            $data = Transfer::whereBetween('created_at', [$startDate, $endDate])->get();
+        } elseif ($type === 'users') {
+            $data = User::whereBetween('created_at', [$startDate, $endDate])->get();
+        }
+
+        // 2. Generate File Content (Simple CSV example)
+        // In a real app, you might use a library like 'laravel-excel' or 'dompdf'
+        $csvContent = "ID,Date,Details\n";
+        foreach ($data as $item) {
+            $csvContent .= "{$item->id},{$item->created_at},Generated Item\n";
+        }
+
+        // 3. Define File Path
+        $filename = 'report_' . $type . '_' . time() . '.csv';
+        $filePath = 'reports/' . $filename;
+
+        // 4. Save File to Storage (storage/app/reports)
+        Storage::put($filePath, $csvContent);
+
+        // 5. Create Database Record
+        Report::create([
+            'type' => $type,
+            'generated_at' => now(),
+            'generated_by' => Auth::id(),
+            'file_path' => $filePath,
+            'parameters' => [
+                'start_date' => $startDate->toDateString(), 
+                'end_date' => $endDate->toDateString()
+            ],
+        ]);
+
+        return redirect()->route('reports.index')->with('success', 'Report generated successfully.');
+    }
+
+    /**
+     * Download the file associated with the report.
+     */
+    public function download(Report $report)
+    {
+        if (!Storage::exists($report->file_path)) {
+            return back()->with('error', 'File not found.');
+        }
+
+        return Storage::download($report->file_path);
+    }
+
+    /**
+     * Remove the report record and the file.
+     */
+    public function destroy(Report $report)
+    {
+        // Delete physical file
+        if ($report->file_path && Storage::exists($report->file_path)) {
+            Storage::delete($report->file_path);
+        }
+
+        // Delete DB record
+        $report->delete();
+
+        return redirect()->route('reports.index')->with('success', 'Report deleted.');
+    }
+}
+
+
+
+
+
+
+\app\Http\Controllers\SocialAuthController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Str;
+use Laravel\Socialite\Facades\Socialite;
+
+class SocialAuthController extends Controller
+{
+    public function redirect(string $provider)
+    {
+        $this->validateProvider($provider);
+
+        return Socialite::driver($provider)->redirect();
+    }
+
+    public function callback(string $provider)
+    {
+        $this->validateProvider($provider);
+
+        try {
+            $socialUser = Socialite::driver($provider)->user();
+        } catch (\Exception $e) {
+            return redirect('/login')->with('error', 'Failed to login with ' . $provider);
+        }
+
+        $user = User::where('provider_name', $provider)
+                    ->where('provider_id', $socialUser->getId())
+                    ->first();
+
+        if (! $user && $socialUser->getEmail()) {
+            $user = User::where('email', $socialUser->getEmail())->first();
+        }
+
+        if (! $user) {
+            $user = User::create([
+                'name'          => $socialUser->getName() ?: $socialUser->getNickname() ?: 'User',
+                'email'         => $socialUser->getEmail(),
+                'password'      => bcrypt(Str::random(32)), 
+                'provider_name' => $provider,
+                'provider_id'   => $socialUser->getId(),
+                'avatar_url'    => $socialUser->getAvatar(),
+                'role_id'    => 3 ,
+            ]);
+        } else {
+            $user->update([
+                'provider_name' => $provider,
+                'provider_id'   => $socialUser->getId(),
+                'avatar_url'    => $socialUser->getAvatar(),
+            ]);
+        }
+
+        Auth::login($user);
+
+        $token = $user->createToken('api-token')->plainTextToken;
+
+
+        return redirect()->away('http://localhost:19006/social-success?token=' . $token);
+        // ^ adjust to your frontend URL / deep link
+    }
+
+    protected function validateProvider(string $provider): void
+    {
+        if (! in_array($provider, ['google', 'facebook', 'apple'])) {
+            abort(404);
+        }
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\StatisticController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use App\Models\User;
+use App\Models\User_Verification;
+use App\Models\Agent;
+use App\Models\Transfer;
+
+class StatisticController extends Controller
+{
+    public function statistic()
+    {
+        $data = [
+            'users_count' => User::count(),
+            'verified_users_count' => User_Verification::where('status', 'approved')->count(),
+            'agents_count' => Agent::count(),
+            'pending_agents_count' => Agent::where('status', 'pending')->count(),
+            'transfers_count' => Transfer::count(),
+            'total_transfer_volume' => Transfer::sum('amount'),
+        ];
+
+        return view('admin.statistics', ['data' => $data]);
+    }
+    
+    public function searchDate(Request $request)
+    {
+        $fromDate = $request->input('from_date');
+        $toDate = $request->input('to_date');
+
+        $data = [
+            'users_count' => User::where('created_at', '>=', $fromDate)->where('created_at', '<=', $toDate)->count(),
+            'verified_users_count' => User_Verification::where('status', 'approved')->where('created_at', '>=', $fromDate)->where('created_at', '<=', $toDate)->count(),
+            'agents_count' => Agent::where('created_at', '>=', $fromDate)->where('created_at', '<=', $toDate)->count(),
+            'pending_agents_count' => Agent::where('status', 'pending')->where('created_at', '>=', $fromDate)->where('created_at', '<=', $toDate)->count(),
+            'transfers_count' => Transfer::where('created_at', '>=', $fromDate)->where('created_at', '<=', $toDate)->count(),
+            'total_transfer_volume' => Transfer::where('created_at', '>=', $fromDate)->where('created_at', '<=', $toDate)->sum('amount'),
+        ];
+
+        return view('admin.statistics', ['data' => $data]);
+    }
+
+    public function dashboard()
+    {
+        $data = [
+            'active_agents_count' => Agent::where('status', 'approved')->count(),
+            'total_transactions_count' => Transfer::count(),
+            'pending_approvals_count' => Agent::where('status', 'pending')->count(),
+        ];
+
+        return view('admin.dashboard', ['data' => $data]);
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\TransferController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Transfer;
+use App\Models\Beneficiary;
+use App\Services\ExchangeRateService;
+use App\Services\TransferService;
+use App\Services\PromotionService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use App\Http\Controllers\AuditLogController;
+
+class TransferController extends Controller
+{
+    public function __construct(
+        private ExchangeRateService $exchangeRateService,
+        private TransferService     $transferService,
+        private PromotionService    $promotionService,
+    ) {}
+
+    public function index(Request $request): JsonResponse
+    {
+        $query = Transfer::where('sender_id', Auth::id())
+            ->with(['beneficiary.country', 'beneficiary.method', 'events', 'payment']);
+
+        // Filter by status
+        if ($request->has('status')) {
+            $query->where('status', $request->status);
+        }
+
+        // Filter by date range
+        if ($request->has('from_date')) {
+            $query->where('initiated_at', '>=', $request->from_date);
+        }
+
+        if ($request->has('to_date')) {
+            $query->where('initiated_at', '<=', $request->to_date);
+        }
+
+        $transfers = $query->orderBy('initiated_at', 'desc')
+            ->paginate($request->get('per_page', 15));
+
+        return response()->json([
+            'success' => true,
+            'data'    => $transfers,
+        ]);
+    }
+
+    // ---------------------------------------------------------
+    // GET /api/transfers/summary  (preview before creating)
+    // ---------------------------------------------------------
+    public function summary(Request $request): JsonResponse
+    {
+        $request->validate([
+            'beneficiary_id'        => ['required', 'integer', 'exists:beneficiaries,id'],
+            'amount'                => ['required', 'numeric', 'min:1'],
+            'currency_from'         => ['required', 'string', 'size:3', 'exists:currencies,code'],
+            'currency_to'           => ['required', 'string', 'size:3', 'exists:currencies,code'],
+            'speed'                 => ['nullable', 'string', 'in:standard,express'],
+            'promo_code'            => ['nullable', 'string', 'max:50'],
+            'destination_country_id'=> ['nullable', 'integer', 'exists:countries,id'],
+        ]);
+
+        $beneficiary = Beneficiary::where('id', $request->beneficiary_id)
+            ->where('user_id', Auth::id())
+            ->with(['country', 'method'])
+            ->firstOrFail();
+
+        $exchangeRate = $this->exchangeRateService->getRate(
+            $request->currency_from,
+            $request->currency_to
+        );
+
+        if ($exchangeRate === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to fetch exchange rate',
+            ], 400);
+        }
+
+        // Determine sender and destination countries (using domain service)
+        // Make sure getSenderCountryId is public in TransferService
+        $senderCountryId      = $this->transferService->getSenderCountryId(Auth::id());
+        $destinationCountryId = $request->destination_country_id ?? $beneficiary->country_id;
+
+        $amount = (float) $request->amount;
+
+        $fee = $this->transferService->calculateFee(
+            $amount,
+            $senderCountryId,
+            $destinationCountryId
+        );
+
+        // Optional promotion / discount
+        $promotion = null;
+        $discount  = 0.0;
+
+        if ($request->filled('promo_code')) {
+            try {
+                [$promotion, $discount] = $this->promotionService->validateAndCalculate(
+                    $request->promo_code,
+                    $amount,
+                    $destinationCountryId
+                );
+            } catch (\Exception $e) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                ], 400);
+            }
+        }
+
+        $totalAmount     = max(0, $amount + $fee - $discount);
+        $recipientAmount = $amount * $exchangeRate;
+
+        // Estimate delivery time based on speed
+        $speed           = $request->speed ?? 'standard';
+        $deliveryMinutes = $speed === 'express' ? 60 : 1440; // 1h vs 24h
+        $estimatedDeliveryAt = now()->addMinutes($deliveryMinutes);
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'beneficiary' => [
+                    'id'        => $beneficiary->id,
+                    'full_name' => $beneficiary->full_name,
+                    'country'   => $beneficiary->country,
+                    'method'    => $beneficiary->method,
+                ],
+                'amount' => [
+                    'send'          => $amount,
+                    'currency_from' => $request->currency_from,
+                    'receive'       => round($recipientAmount, 2),
+                    'currency_to'   => $request->currency_to,
+                ],
+                'receiver_amount' => [
+                    'amount'   => round($recipientAmount, 2),
+                    'currency' => $request->currency_to,
+                ],
+                'exchange_rate'          => $exchangeRate,
+                'fee'                    => round($fee, 2),
+                'discount'               => round($discount, 2),
+                'total_amount'           => round($totalAmount, 2),
+                'speed'                  => $speed,
+                'estimated_delivery_time'=> $estimatedDeliveryAt->toIso8601String(),
+                'promotion'              => $promotion,
+                'breakdown'              => [
+                    'transfer_amount'    => $amount,
+                    'fee'                => round($fee, 2),
+                    'discount'           => round($discount, 2),
+                    'total_to_pay'       => round($totalAmount, 2),
+                    'recipient_receives' => round($recipientAmount, 2),
+                ],
+            ],
+        ]);
+    }
+
+    /*
+      POST /api/transfers
+
+      Body:
+      {
+        "beneficiary_id": 1,
+        "amount": 1000,
+        "currency_from": "USD",
+        "currency_to": "EUR",
+        "speed": "standard", // or "express"
+        "promo_code": "SUMMER10", // optional
+        "destination_country_id": 2 // optional, falls back to beneficiary country
+      }
+    */
+    public function store(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'beneficiary_id'         => ['required', 'integer', 'exists:beneficiaries,id'],
+            'amount'                 => ['required', 'numeric', 'min:1'],
+            'currency_from'          => ['required', 'string', 'size:3', 'exists:currencies,code'],
+            'currency_to'            => ['required', 'string', 'size:3', 'exists:currencies,code'],
+            'speed'                  => ['nullable', 'string', 'in:standard,express'],
+            'promo_code'             => ['nullable', 'string', 'max:50'],
+            'destination_country_id' => ['nullable', 'integer', 'exists:countries,id'],
+        ]);
+
+        $userId = Auth::id();
+
+        $beneficiary = Beneficiary::where('id', $data['beneficiary_id'])
+            ->where('user_id', $userId)
+            ->firstOrFail();
+
+        $amount = (float) $data['amount'];
+
+        // 1) Exchange rate (for preview logic & receiver amount)
+        $exchangeRate = $this->exchangeRateService->getRate(
+            $data['currency_from'],
+            $data['currency_to']
+        );
+
+        if ($exchangeRate === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to fetch exchange rate',
+            ], 400);
+        }
+
+        // 2) Fee
+        $senderCountryId      = $this->transferService->getSenderCountryId($userId);
+        $destinationCountryId = $data['destination_country_id'] ?? $beneficiary->country_id;
+
+        $fee = $this->transferService->calculateFee(
+            $amount,
+            $senderCountryId,
+            $destinationCountryId
+        );
+
+        // 3) Promotion / discount
+        $promotion   = null;
+        $discount    = 0.0;
+        $promotionId = null;
+
+        if (!empty($data['promo_code'])) {
+            try {
+                [$promotion, $discount] = $this->promotionService->validateAndCalculate(
+                    $data['promo_code'],
+                    $amount,
+                    $destinationCountryId
+                );
+                $promotionId = $promotion->id;
+            } catch (\Exception $e) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                ], 400);
+            }
+        }
+
+        // 4) Totals
+        $totalAmount     = max(0, $amount + $fee - $discount); // what sender pays in source currency
+        $recipientAmount = $amount * $exchangeRate;            // what receiver gets in dest currency
+
+        // 5) Delivery estimate
+        $speed               = $data['speed'] ?? 'standard';
+        $deliveryMinutes     = $speed === 'express' ? 60 : 1440;
+        $estimatedDeliveryAt = now()->addMinutes($deliveryMinutes);
+
+        // 6) Actually create the transfer (domain service still validates everything)
+        $transfer = $this->transferService->createTransfer([
+            'sender_id'            => $userId,
+            'beneficiary_id'       => $beneficiary->id,
+            'amount'               => $amount,
+            'currency_from'        => $data['currency_from'],
+            'currency_to'          => $data['currency_to'],
+            // these extra fields are ignored by current createTransfer, but fine if you later use them
+            'exchange_rate'        => $exchangeRate,
+            'fee'                  => $fee,
+            'total_amount'         => $totalAmount,
+            'promotion_id'         => $promotionId,
+            'discount_amount'      => $discount,
+            'speed'                => $speed,
+            'estimated_delivery_at'=> $estimatedDeliveryAt,
+        ]);
+
+        AuditLogController::logSystemAction(
+            Auth::id(),
+            'create_transfer',
+            'transfers',
+            $transfer->id,
+            ['amount' => $amount, 'currency_from' => $request->currency_from, 'currency_to' => $request->currency_to]
+        );
+
+        // Load relations for JSON
+        $transfer->load(['beneficiary.country', 'beneficiary.method', 'events']);
+
+        // Use the *saved* values to compute receiver_amount (authoritative)
+        $receiverAmount = round($transfer->amount * $transfer->exchange_rate, 2);
+
+        // Keep same shape as before (data = transfer fields) and just append receiver_amount
+        $payload                       = $transfer->toArray();
+        $payload['receiver_amount']    = [
+            'amount'   => $receiverAmount,
+            'currency' => $transfer->currency_to,
+        ];
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer initiated successfully',
+            'data'    => $payload,
+        ], 201);
+    }
+
+    public function show(int $id): JsonResponse
+    {
+        $transfer = Transfer::where('id', $id)
+            ->where('sender_id', Auth::id())
+            ->with(['beneficiary.country', 'beneficiary.method', 'events', 'payment', 'promotion'])
+            ->firstOrFail();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $transfer,
+        ]);
+    }
+
+    // Returns the current status and all events (status changes) for a transfer
+    public function track(int $id): JsonResponse
+    {
+        $transfer = Transfer::where('id', $id)
+            ->where('sender_id', Auth::id())
+            ->with(['events' => function ($query) {
+                $query->orderBy('created_at', 'desc');
+            }])
+            ->firstOrFail();
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'transfer'       => $transfer,
+                'current_status' => $transfer->business_status,
+                'events'         => $transfer->events,
+            ],
+        ]);
+    }
+
+    public function cancel(int $id): JsonResponse
+    {
+        $transfer = $this->transferService->cancelTransfer($id, Auth::id());
+
+        AuditLogController::logSystemAction(
+            Auth::id(),
+            'cancel_transfer',
+            'transfers',
+            $id,
+            ['status' => 'cancelled']
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer cancelled successfully',
+            'data'    => $transfer->load(['beneficiary.country', 'beneficiary.method', 'events']),
+        ]);
+    }
+
+    public function refund(int $id): JsonResponse
+    {
+        $transfer = $this->transferService->processRefund($id, Auth::id());
+
+        AuditLogController::logSystemAction(
+            Auth::id(),
+            'refund_transfer',
+            'transfers',
+            $id,
+            ['status' => 'refunded']
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer refunded successfully',
+            'data'    => $transfer->load(['beneficiary.country', 'beneficiary.method', 'events']),
+        ]);
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\TransferEventController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Transfer_Event;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Auth;
+
+class TransferEventController extends Controller
+{
+    
+    public function index(int $transferId): JsonResponse
+    {
+       
+        $transfer = \App\Models\Transfer::where('id', $transferId)
+            ->where('sender_id', Auth::id())
+            ->firstOrFail();
+
+        $events = Transfer_Event::where('transfer_id', $transferId)
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $events,
+        ]);
+    }
+}
+
+
+
+
+
+
+\app\Http\Controllers\TransferFeeController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Transfer_Fee;
+use App\Models\Country;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+
+class TransferFeeController extends Controller
+{
+    
+    public function index(Request $request): JsonResponse
+    {
+        $query = Transfer_Fee::with(['countryFrom', 'countryTo']);
+
+        // Filter by sender country
+        if ($request->has('country_from_id')) {
+            $query->where('country_from_id', $request->country_from_id);
+        }
+
+        
+        if ($request->has('country_to_id')) {
+            $query->where('country_to_id', $request->country_to_id);
+        }
+
+        $fees = $query->orderBy('country_from_id')
+            ->orderBy('country_to_id')
+            ->orderBy('min_amount')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $fees,
+        ]);
+    }
+
+    /*
+      Body: {
+        "amount": 1000,
+       "country_from_id": 1,
+       "country_to_id": 2
+     }
+     */
+   public function calculate(Request $request): JsonResponse
+{
+    $request->validate([
+        'amount'          => ['required', 'numeric', 'min:0'],
+        'country_from_id' => ['required', 'integer', 'exists:countries,id'],
+        'country_to_id'   => ['required', 'integer', 'exists:countries,id'],
+    ]);
+
+    $amount        = (float) $request->amount;
+    $countryFromId = (int) $request->country_from_id;
+    $countryToId   = (int) $request->country_to_id;
+
+    // 1) Find matching fee rule
+    $feeRule = Transfer_Fee::where('country_from_id', $countryFromId)
+        ->where('country_to_id', $countryToId)
+        ->where('min_amount', '<=', $amount)
+        ->where('max_amount', '>=', $amount)
+        ->with(['countryFrom', 'countryTo'])
+        ->first();
+
+    // 2) Calculate fee
+    if ($feeRule) {
+        $fixed   = (float) $feeRule->fee_fixed;
+        $percent = (float) $feeRule->fee_percent;
+
+        // If rule explicitly says "no fees" (0 + 0), you have 2 options:
+        // A) Respect it → fee = 0
+        // B) Fall back to default formula
+        //
+        // I'll show A (respect) by default, and comment B.
+        if ($fixed === 0.0 && $percent === 0.0) {
+            // A) Respect rule: no fees for this corridor / range
+            $fee = 0.0;
+        } else {
+            // Normal rule-based calculation
+            $fee = $fixed + ($amount * $percent / 100.0);
+        }
+
+        $appliedRule = $feeRule;
+    } else {
+        // 3) No rule found → fallback logic (global default)
+        // 2% of amount, minimum 5.0
+        $fee        = max($amount * 0.02, 5.0);
+        $appliedRule = null;
+    }
+
+    $fee        = round($fee, 2);
+    $total      = $amount + $fee;
+    $countryFrom = Country::find($countryFromId);
+    $countryTo   = Country::find($countryToId);
+
+    return response()->json([
+        'success' => true,
+        'data'    => [
+            'amount'       => $amount,
+            'country_from' => $countryFrom,
+            'country_to'   => $countryTo,
+            'fee'          => $fee,
+            'fee_rule'     => $appliedRule,
+            'total_amount' => $total,
+        ],
+    ]);
+}
+
+
+  
+    public function show(int $id): JsonResponse
+    {
+        $fee = Transfer_Fee::with(['countryFrom', 'countryTo'])
+            ->findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => $fee,
+        ]);
+    }
+
+    /*
+     Create a new transfer fee rule
+      Body: {
+       "country_from_id": 1,
+       "country_to_id": 2,
+       "min_amount": 0,
+       "max_amount": 10000,
+       "fee_fixed": 5,
+       "fee_percent": 2.5
+     }
+     */
+    public function store(Request $request): JsonResponse
+    {
+        $request->validate([
+            'country_from_id' => ['required', 'integer', 'exists:countries,id'],
+            'country_to_id' => ['required', 'integer', 'exists:countries,id'],
+            'min_amount' => ['required', 'numeric', 'min:0'],
+            'max_amount' => ['required', 'numeric', 'min:0', 'gt:min_amount'],
+            'fee_fixed' => ['nullable', 'numeric', 'min:0'],
+            'fee_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
+        ]);
+
+        // Check for overlapping ranges (optional validation)
+        $overlapping = Transfer_Fee::where('country_from_id', $request->country_from_id)
+            ->where('country_to_id', $request->country_to_id)
+            ->where(function ($query) use ($request) {
+                $query->whereBetween('min_amount', [$request->min_amount, $request->max_amount])
+                    ->orWhereBetween('max_amount', [$request->min_amount, $request->max_amount])
+                    ->orWhere(function ($q) use ($request) {
+                        $q->where('min_amount', '<=', $request->min_amount)
+                            ->where('max_amount', '>=', $request->max_amount);
+                    });
+            })
+            ->exists();
+
+        if ($overlapping) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A fee rule already exists for this amount range',
+            ], 400);
+        }
+
+        $fee = Transfer_Fee::create([
+            'country_from_id' => $request->country_from_id,
+            'country_to_id' => $request->country_to_id,
+            'min_amount' => $request->min_amount,
+            'max_amount' => $request->max_amount,
+            'fee_fixed' => $request->fee_fixed ?? 0,
+            'fee_percent' => $request->fee_percent ?? 0,
+            'last_updated' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer fee rule created successfully',
+            'data' => $fee->load(['countryFrom', 'countryTo']),
+        ], 201);
+    }
+
+
+    public function update(Request $request, int $id): JsonResponse
+    {
+        $fee = Transfer_Fee::findOrFail($id);
+
+        $request->validate([
+            'country_from_id' => ['sometimes', 'integer', 'exists:countries,id'],
+            'country_to_id' => ['sometimes', 'integer', 'exists:countries,id'],
+            'min_amount' => ['sometimes', 'numeric', 'min:0'],
+            'max_amount' => ['sometimes', 'numeric', 'min:0'],
+            'fee_fixed' => ['nullable', 'numeric', 'min:0'],
+            'fee_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
+        ]);
+
+        
+        if ($request->has('min_amount') && $request->has('max_amount')) {
+            if ($request->max_amount <= $request->min_amount) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'max_amount must be greater than min_amount',
+                ], 400);
+            }
+        }
+
+        $fee->update(array_merge(
+            $request->only(['country_from_id', 'country_to_id', 'min_amount', 'max_amount', 'fee_fixed', 'fee_percent']),
+            ['last_updated' => now()]
+        ));
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer fee rule updated successfully',
+            'data' => $fee->fresh()->load(['countryFrom', 'countryTo']),
+        ]);
+    }
+
+ 
+    public function destroy(int $id): JsonResponse
+    {
+        $fee = Transfer_Fee::findOrFail($id);
+        $fee->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Transfer fee rule deleted successfully',
+        ]);
+    }
+}
+
+
+
+
+
+
+\app\Http\Controllers\UserBankAccountController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use App\Models\UserBankAccount;
+use App\Http\Controllers\AuditLogController;
+
+class UserBankAccountController extends Controller
+{
+    /**
+     * OLD: generateAccountNumber (incremental like 000001...)
+     * You can keep it for future non-card accounts if you want,
+     * but it's no longer used for card accounts.
+     */
+    private function generateAccountNumber(): string
+    {
+        $last = UserBankAccount::where('user_id', Auth::id())
+            ->orderByDesc('id')
+            ->first();
+
+        $nextNumber = $last ? ((int) $last->account_number + 1) : 1;
+
+        return str_pad((string) $nextNumber, 6, '0', STR_PAD_LEFT);
+    }
+
+    public function index(): JsonResponse
+    {
+        $accounts = UserBankAccount::where('user_id', Auth::id())
+            ->with('currency')
+            ->get();
+
+        // Format for frontend
+        $data = $accounts->map(function (UserBankAccount $account) {
+            return $this->formatAccount($account);
+        });
+
+        return response()->json([
+            'success' => true,
+            'data'    => $data,
+        ]);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        // Validate the input data
+        $data = $request->validate([
+            // bank_name now OPTIONAL – we can auto-generate a nice label
+            'bank_name'     => ['nullable', 'string', 'max:255'],
+            // account_number is NOT provided by client anymore
+            'currency_code' => ['required', 'string', 'size:3', 'exists:currencies,code'],
+        ]);
+
+        // -----------------------------------------
+        // 1) Generate SENDER CARD (Visa-style)
+        // -----------------------------------------
+        $cardNumber = $this->generateCardNumber();
+        $brand      = $this->detectCardBrand($cardNumber) ?? 'visa';
+        $digits     = preg_replace('/\D/', '', $cardNumber);
+        $last4      = substr($digits, -4);
+        $masked     = substr($digits, 0, 4) . ' **** **** ' . $last4;
+
+        // Auto bank name if not provided
+        $bankName = $data['bank_name'] ?? ('My ' . strtoupper($data['currency_code']) . ' Visa');
+
+        $account = UserBankAccount::create([
+            'user_id'        => Auth::id(),
+            'bank_name'      => $bankName,
+            // store FULL card number in account_number (SENDER side)
+            'account_number' => $cardNumber,
+            'currency_code'  => $data['currency_code'],
+            'status'         => 'pending',
+        ]);
+
+        AuditLogController::logSystemAction(
+            Auth::id(),
+            'create_bank_account',
+            'user_bank_accounts',
+            $account->id,
+            ['bank_name' => $account->bank_name, 'currency' => $account->currency_code]
+        );
+
+        $account->load('currency');
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Bank account added successfully',
+            'data'    => $this->formatAccount($account, $brand, $last4, $masked),
+        ], 201);
+    }
+
+    public function show(int $id): JsonResponse
+{
+    $account = UserBankAccount::where('id', $id)
+        ->where('user_id', Auth::id())
+        ->with('currency')
+        ->firstOrFail();
+
+    return response()->json([
+        'success' => true,
+        'data'    => $this->formatAccount($account),
+    ]);
+}
+
+public function update(Request $request, int $id): JsonResponse
+{
+    $account = UserBankAccount::where('id', $id)
+        ->where('user_id', Auth::id())
+        ->firstOrFail();
+
+    // We DO NOT allow changing account_number here (that’s dangerous)
+    $data = $request->validate([
+        'bank_name'     => ['sometimes', 'string', 'max:255'],
+        'currency_code' => ['sometimes', 'string', 'size:3', 'exists:currencies,code'],
+    ]);
+
+    $account->update($data);
+
+    $account = $account->fresh()->load('currency');
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Bank account updated successfully',
+        'data'    => $this->formatAccount($account),
+    ]);
+}
+
+public function destroy(int $id): JsonResponse
+{
+    $account = UserBankAccount::where('id', $id)
+        ->where('user_id', Auth::id())
+        ->firstOrFail();
+
+    $account->delete();
+
+    AuditLogController::logSystemAction(
+        Auth::id(),
+        'delete_bank_account',
+        'user_bank_accounts',
+        $id,
+        []
+    );
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Bank account deleted successfully',
+    ]);
+}
+
+
+    public function verify(Request $request, int $id): JsonResponse
+    {
+        // This one is probably for admin/agent, so we don't limit by Auth::id()
+        $account = UserBankAccount::findOrFail($id);
+
+        $data = $request->validate([
+            'status' => ['required', 'in:verified,rejected'],
+        ]);
+
+        $account->update([
+            'status'      => $data['status'],
+            'verified_at' => $data['status'] === 'verified' ? now() : null,
+        ]);
+
+        $account = $account->fresh()->load('currency');
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Bank account verification updated',
+            'data'    => $this->formatAccount($account),
+        ]);
+    }
+
+    // =========================================================
+    //  FORMATTER FOR FRONTEND
+    // =========================================================
+    private function formatAccount(UserBankAccount $account, ?string $brandOverride = null, ?string $last4Override = null, ?string $maskedOverride = null): array
+    {
+        $digits = preg_replace('/\D/', '', $account->account_number);
+
+        $brand = $brandOverride ?? ($this->detectCardBrand($digits) ?? 'unknown');
+        $last4 = $last4Override ?? substr($digits, -4);
+        $masked = $maskedOverride ?? (strlen($digits) >= 4
+            ? substr($digits, 0, 4) . ' **** **** ' . $last4
+            : $digits
+        );
+
+        return [
+            'id'            => $account->id,
+            'user_id'       => $account->user_id,
+            'bank_name'     => $account->bank_name,
+            'currency_code' => $account->currency_code,
+            'status'        => $account->status,
+            'card'          => [
+                'card_number' => $digits,   // full PAN – visible in dev, hide in prod UI
+                'brand'       => $brand,
+                'last4'       => $last4,
+                'masked'      => $masked,
+            ],
+            'currency'      => $account->currency ? [
+                'code'     => $account->currency->code,
+                'name'     => $account->currency->name,
+                'decimals' => $account->currency->decimals,
+            ] : null,
+        ];
+    }
+
+    // =========================================================
+    //  CARD HELPERS (same logic style as BeneficiaryController)
+    // =========================================================
+
+    /**
+     * Generate a random, Luhn-valid 16-digit Visa style card number.
+     * This is for DEMO purposes (no real cards in dev).
+     */
+    private function generateCardNumber(): string
+    {
+        // Start with 15 digits (Visa usually starts with 4)
+        $digits = '4';
+        for ($i = 0; $i < 14; $i++) {
+            $digits .= random_int(0, 9);
+        }
+
+        // Compute Luhn check digit
+        $sum = 0;
+        $alt = true; // start doubling from the rightmost of the 15
+        for ($i = strlen($digits) - 1; $i >= 0; $i--) {
+            $n = intval($digits[$i]);
+            if ($alt) {
+                $n *= 2;
+                if ($n > 9) {
+                    $n -= 9;
+                }
+            }
+            $sum += $n;
+            $alt = !$alt;
+        }
+
+        $checkDigit = (10 - ($sum % 10)) % 10;
+
+        return $digits . $checkDigit;
+    }
+
+    private function detectCardBrand(string $number): ?string
+    {
+        $number = preg_replace('/\D/', '', $number);
+
+        if (preg_match('/^4[0-9]{12}(?:[0-9]{3})?$/', $number)) {
+            return 'visa';
+        }
+
+        if (preg_match('/^5[1-5][0-9]{14}$/', $number)) {
+            return 'mastercard';
+        }
+
+        if (preg_match('/^3[47][0-9]{13}$/', $number)) {
+            return 'amex';
+        }
+
+        if (preg_match('/^6(?:011|5[0-9]{2})[0-9]{12}$/', $number)) {
+            return 'discover';
+        }
+
+        return null;
+    }
+}
+
+
+
+
+
+\app\Http\Controllers\UserController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+
+class UserController extends Controller
+{
+    public function index()
+    {
+        $users = User::with('role')->paginate(20);
+        return response()->json($users);
+    }
+
+    public function show($id)
+    {
+        $user = User::with(['role', 'bankAccounts', 'verifications'])
+            ->findOrFail($id);
+
+        return response()->json($user);
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $user = $request->user();
+
+        $data = $request->validate([
+            'name'  => ['sometimes', 'string', 'max:255'],
+            'phone' => ['sometimes', 'string', 'max:50'],
+        ]);
+
+        $user->update($data);
+
+        return response()->json($user);
+    }
+
+     public function me(Request $request)
+    {
+        return response()->json([
+            'success' => true,
+            'user' => $request->user(),
+        ]);
+    }
+
+    // PUT /api/me
+    public function update(Request $request)
+    {
+        $user = $request->user();
+
+        // Validate profile fields
+        $data = $request->validate([
+            'name'     => 'sometimes|string|max:255',
+            'email'    => 'sometimes|email|unique:users,email,' . $user->id,
+            'phone'    => 'sometimes|string|max:20',
+            'password' => 'sometimes|string|min:6',
+        ]);
+
+        // If password was sent, hash it
+        if (isset($data['password'])) {
+            $data['password'] = Hash::make($data['password']);
+        }
+
+        // Update user
+        $user->update($data);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Profile updated successfully.',
+            'user'    => $user,
+        ]);
+    }
+}
+
+
+
+
+
+
+\app\Http\Controllers\UserVerificationController.php
+
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use App\Models\UserVerification;
+use App\Http\Controllers\AuditLogController;
+
+class UserVerificationController extends Controller
+{
+    /**
+     * GET /api/kyc
+     * Return all KYC submissions for the current user (most recent first)
+     */
+   // app/Http/Controllers/UserVerificationController.php
+
+public function show(Request $request)
+{
+    $user = $request->user(); // <-- FIX
+
+    if (! $user) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Unauthenticated.',
+        ], 401);
+    }
+
+    $verifications = $user->verifications()
+        ->orderByDesc('created_at')
+        ->get()
+        ->map(function (UserVerification $v) {
+            return [
+                'id'            => $v->id,
+                'id_type'       => $v->id_type,
+                'id_number'     => $v->id_number,
+                'status'        => $v->status,
+                'document_path' => $v->document_path,
+                'document_url'  => $v->document_path
+                    ? asset('storage/' . $v->document_path)
+                    : null,
+                'created_at'    => $v->created_at,
+                'verified_at'   => $v->verified_at,
+            ];
+        });
+
+    return response()->json([
+        'success' => true,
+        'data'    => $verifications,
+    ]);
+}
+
+
+    /**
+     * POST /api/kyc
+     * Create a new KYC submission for the current user
+     */
+    public function store(Request $request)
+{
+    $data = $request->validate([
+        'id_type'        => ['required', 'string', 'max:100'],
+        'id_number'      => ['required', 'string', 'max:100'],
+        'document'       => ['nullable', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:4096'],
+        'document_path'  => ['nullable', 'string', 'max:255'], // 👈 allow string path too
+    ]);
+
+    $user = $request->user();
+
+    $path = null;
+
+    // 1) If a file is uploaded, this is the source of truth
+    if ($request->hasFile('document')) {
+        $path = $request->file('document')->store('kyc-documents', 'public');
+    }
+    // 2) Otherwise, fall back to a provided document_path (for testing / seeding)
+    elseif (!empty($data['document_path'])) {
+        $path = $data['document_path'];  // ideally something like 'kyc-documents/test.jpg'
+    }
+
+    $verification = UserVerification::create([
+        'user_id'       => $user->id,
+        'id_type'       => $data['id_type'],
+        'id_number'     => $data['id_number'],
+        'document_path' => $path,
+        'status'        => 'pending',
+    ]);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'KYC submitted successfully.',
+        'data'    => [
+            'id'            => $verification->id,
+            'id_type'       => $verification->id_type,
+            'id_number'     => $verification->id_number,
+            'status'        => $verification->status,
+            'document_path' => $verification->document_path,
+            'document_url'  => $verification->document_path
+                ? asset('storage/' . $verification->document_path)
+                : null,
+            'created_at'    => $verification->created_at,
+            'verified_at'   => $verification->verified_at,
+        ],
+    ], 201);
+}
+
+    /**
+     * GET /api/admin/kyc/pending (example admin endpoint)
+     */
+    public function pending()
+    {
+        $items = UserVerification::with('user')
+            ->where('status', 'pending')
+            ->orderBy('created_at')
+            ->get();
+
+        return response()->json($items);
+    }
+
+    /**
+     * POST /api/admin/kyc/{id}/approve
+     */
+    public function approve($id)
+    {
+        $verification = UserVerification::with('user')->findOrFail($id);
+
+        $verification->update([
+            'status'      => 'approved',
+            'verified_at' => now(),
+        ]);
+
+        return response()->json([
+            'message'      => 'KYC approved',
+            'verification' => $verification,
+        ]);
+    }
+
+    /**
+     * POST /api/admin/kyc/{id}/reject
+     */
+    public function reject(Request $request, $id)
+    {
+        $verification = UserVerification::findOrFail($id);
+
+        $verification->update([
+            'status'      => 'rejected',
+            'verified_at' => null,
+        ]);
+
+        return response()->json([
+            'message'      => 'KYC rejected',
+            'verification' => $verification,
+        ]);
+    }
+}
+
+
+
+
+
+\app\Http\Middleware\EnsureRole.php
+
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class EnsureRole
+{
+    /**
+     * Handle an incoming request.
+     *
+     * @param  array<int, string>  $roles
+     */
+    public function handle(Request $request, Closure $next, ...$roles)
+    {
+        $user = Auth::user();
+
+        if (! $user) {
+            abort(401, 'Authentication required.');
+        }
+
+        $roleName = $user->role->name ?? null;
+
+        if ($roleName && in_array($roleName, $roles, true)) {
+            return $next($request);
+        }
+
+        abort(403, 'You do not have permission to access this resource.');
+    }
+}
+
+
+
+
+
+
+\app\Http\Middleware\KycVerifiedMiddleware.php
+
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+
+class KycVerifiedMiddleware
+{
+    public function handle(Request $request, Closure $next)
+    {
+        $user = $request->user();
+
+        if (! $user) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        }
+
+        // If user has a role and is Admin, bypass KYC check
+        if ($user->role && in_array($user->role->name, ['Admin'], true)) {
+            return $next($request);
+        }
+
+        // For normal users: must have at least one approved verification
+        $isVerified = $user->verifications()
+            ->where('status', 'approved')
+            ->exists();
+
+        if (! $isVerified) {
+            return response()->json([
+                'message' => 'KYC not completed',
+            ], 403);
+        }
+
+        return $next($request);
+    }
+}
+
+
+
+
+
+\app\Http\Middleware\RoleMiddleware.php
+
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+
+class RoleMiddleware
+{
+    public function handle(Request $request, Closure $next, ...$roles)
+    {
+        $user = $request->user();
+
+        if (! $user || ! $user->role) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        if (! in_array($user->role->name, $roles)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        return $next($request);
+    }
+}
+
+
+
+
+
+\app\Models\Admin.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Admin extends Model
+{
+    protected $fillable = ['user_id','privilege_level'];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+
+
+
+
+\app\Models\Agent_Hour.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Agent_Hour extends Model
+{
+    protected $table = 'agent_hours';
+    
+    public $timestamps = false;
+    protected $primaryKey = null;
+    public $incrementing = false;
+
+    protected $fillable = [
+        'agent_id',
+        'day_of_week',
+        'open_time',
+        'close_time',
+        'is_closed',
+    ];
+
+    protected $casts = [
+        'day_of_week' => 'integer',
+        'open_time' => 'string',
+        'close_time' => 'string',
+        'is_closed' => 'boolean',
+    ];
+
+    public function agent()
+    {
+        return $this->belongsTo(Agent::class);
+    }
+}
+
+
+
+
+
+
+
+\app\Models\Agent_Transaction.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Agent_Transaction extends Model
+{
+    protected $table = 'agent_transactions';
+
+    protected $fillable = [
+        'agent_id','transfer_id','type','amount','commission','processed_at',
+    ];
+
+    protected $casts = [
+        'amount' => 'decimal:2',
+        'commission' => 'decimal:2',
+        'processed_at' => 'datetime',
+    ];
+
+    public function agent()
+    {
+        return $this->belongsTo(Agent::class);
+    }
+
+    public function transfer()
+    {
+        return $this->belongsTo(Transfer::class);
+    }
+}
+
+
+
+
+
+\app\Models\Agent.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Agent extends Model
+{
+    protected $fillable = [
+        'user_id','store_name','address','latitude','longitude','status','commission_rate',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function hours()
+    {
+        return $this->hasMany(Agent_Hour::class)->orderBy('day_of_week');
+    }
+
+    public function transactions()
+    {
+        return $this->hasMany(Agent_Transaction::class);
+    }
+
+    /**
+     * Get total commission earned by this agent.
+     */
+    public function getTotalCommissionAttribute()
+    {
+        return $this->transactions()->sum('commission');
+    }
+
+    /**
+     * Get commission for a specific period.
+     */
+    public function getCommissionForPeriod($startDate, $endDate)
+    {
+        return $this->transactions()
+            ->whereBetween('processed_at', [$startDate, $endDate])
+            ->sum('commission');
+    }
+
+    /**
+     * Check if agent is currently open based on working hours.
+     */
+    public function isOpenNow()
+    {
+        $currentDay = now()->dayOfWeek;
+        $currentTime = now()->format('H:i:s');
+
+        return $this->hours()
+            ->where('day_of_week', $currentDay)
+            ->where('is_closed', false)
+            ->where('open_time', '<=', $currentTime)
+            ->where('close_time', '>=', $currentTime)
+            ->exists();
+    }
+}
+
+
+
+
+
+\app\Models\Audit_Log.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class AuditLog extends Model
+{
+    protected $table = 'audit_logs';
+    public $timestamps = false;
+
+    protected $fillable = [
+        'user_id','actor_type','actor_id','action',
+        'table_name','record_id','metadata','created_at',
+    ];
+
+    protected $casts = [
+        'metadata'   => 'array',
+        'created_at' => 'datetime',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+
+
+
+
+
+\app\Models\Beneficiary.php
+
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Beneficiary extends Model
+{
+    protected $fillable = [
+        'user_id','full_name','country_id','transfer_method_id','payout_details',
+    ];
+
+    protected $casts = [
+        'payout_details' => 'array',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function country()
+    {
+        return $this->belongsTo(Country::class);
+    }
+
+    public function method()
+    {
+        return $this->belongsTo(Transfer_Method::class, 'transfer_method_id');
+    }
+
+    public function transfers()
+    {
+        return $this->hasMany(Transfer::class);
+    }
+}
+
+
+
+
+
+\app\Models\Country.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Country extends Model
+{
+    protected $fillable = ['iso2','name'];
+
+    public function beneficiaries()
+    {
+        return $this->hasMany(Beneficiary::class);
+    }
+}
+
+
+
+
+\app\Models\Currency.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Currency extends Model
+{
+    protected $primaryKey = 'code';
+    public $incrementing = false;
+    protected $keyType = 'string';
+
+    protected $fillable = ['code','name','decimals'];
+
+    public function exchangeRatesFrom()
+    {
+        return $this->hasMany(Exchange_Rate::class, 'currency_from', 'code');
+    }
+
+    public function exchangeRatesTo()
+    {
+        return $this->hasMany(Exchange_Rate::class, 'currency_to', 'code');
+    }
+}
+
+
+
+
+\app\Models\Exchange_Rate.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Exchange_Rate extends Model
+{
+    // Explicitly set table name to match migration
+    protected $table = 'exchange_rates';
+    
+    protected $fillable = [
+        'currency_from','currency_to','rate','last_updated',
+    ];
+
+    protected $casts = [
+        'last_updated' => 'datetime',
+    ];
+
+    public function currencyFrom()
+    {
+        return $this->belongsTo(Currency::class, 'currency_from', 'code');
+    }
+
+    public function currencyTo()
+    {
+        return $this->belongsTo(Currency::class, 'currency_to', 'code');
+    }
+}
+
+
+
+
+\app\Models\Location.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Location extends Model
+{
+    protected $fillable = [
+        'address','lat','lng','open_time','close_time',
+    ];
+}
+
+
+
+
+\app\Models\Payment.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Payment extends Model
+{
+    protected $fillable = [
+        'transfer_id','amount','currency_code',
+        'gateway','gateway_ref','status',
+        'authorized_at','captured_at','refunded_at',
+    ];
+
+    protected $casts = [
+        'authorized_at' => 'datetime',
+        'captured_at'   => 'datetime',
+        'refunded_at'   => 'datetime',
+    ];
+
+    public function transfer()
+    {
+        return $this->belongsTo(Transfer::class);
+    }
+
+    public function currency()
+    {
+        return $this->belongsTo(Currency::class, 'currency_code', 'code');
+    }
+}
+
+
+
+
+\app\Models\Promotion.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Promotion extends Model
+{
+    protected $fillable = [
+        'code',
+        'description',
+        'discount_type',
+        'discount_value',
+        'max_discount',
+        'min_amount',
+        'country_to_id',
+        'starts_at',
+        'ends_at',
+        'usage_limit',
+        'used_count',
+        'active',
+    ];
+
+    protected $casts = [
+        'starts_at' => 'datetime',
+        'ends_at' => 'datetime',
+        'active' => 'boolean',
+    ];
+
+    public function countryTo()
+    {
+        return $this->belongsTo(Country::class, 'country_to_id');
+    }
+
+   
+    public function isValidFor(float $amount, ?int $countryToId = null): bool
+    {
+        if (!$this->active) {
+            return false;
+        }
+
+        $now = now();
+
+        if ($this->starts_at && $now->lt($this->starts_at)) {
+            return false;
+        }
+
+        if ($this->ends_at && $now->gt($this->ends_at)) {
+            return false;
+        }
+
+        if ($this->usage_limit !== null && $this->used_count >= $this->usage_limit) {
+            return false;
+        }
+
+        if ($amount < (float) $this->min_amount) {
+            return false;
+        }
+
+        if ($this->country_to_id && $countryToId && $this->country_to_id !== $countryToId) {
+            return false;
+        }
+
+        return true;
+    }
+}
+
+
+
+
+
+
+\app\Models\Report.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Report extends Model
+{
+    protected $fillable = [
+        'type','generated_at','generated_by','file_path','parameters',
+    ];
+
+    protected $casts = [
+        'generated_at' => 'datetime',
+        'parameters'   => 'array',
+    ];
+
+    public function author()
+    {
+        return $this->belongsTo(User::class, 'generated_by');
+    }
+}
+
+
+
+
+
+\app\Models\Role.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Role extends Model
+{
+    public $timestamps = false;
+
+    protected $fillable = [
+        'name',
+        'permissions_json',
+    ];
+
+    public function users()
+    {
+        return $this->hasMany(User::class);
+    }
+}
+
+
+
+
+\app\Models\Transfer_Event.php
+
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Transfer_Event extends Model
+{
+    // Explicitly set table name to match migration
+    protected $table = 'transfer_events';
+    
+    protected $fillable = [
+        'transfer_id','status','note','actor_type','actor_id',
+    ];
+
+    public function transfer()
+    {
+        return $this->belongsTo(Transfer::class);
+    }
+}
+
+
+
+
+\app\Models\Transfer_Fee.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Transfer_Fee extends Model
+{
+    // Explicitly set table name to match migration
+    protected $table = 'transfer_fees';
+    
+    protected $fillable = [
+        'country_from_id','country_to_id',
+        'min_amount','max_amount',
+        'fee_fixed','fee_percent','last_updated',
+    ];
+
+    protected $casts = [
+        'last_updated' => 'datetime',
+    ];
+
+    public function countryFrom()
+    {
+        return $this->belongsTo(Country::class, 'country_from_id');
+    }
+
+    public function countryTo()
+    {
+        return $this->belongsTo(Country::class, 'country_to_id');
+    }
+}
+
+
+
+
+\app\Models\Transfer_Method.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Transfer_Method extends Model
+{
+    // Explicitly set table name to match migration
+    protected $table = 'transfer_methods';
+    
+    protected $fillable = ['name','description'];
+
+    public function beneficiaries()
+    {
+        return $this->hasMany(Beneficiary::class);
+    }
+}
+
+
+
+
+
+\app\Models\Transfer.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Transfer extends Model
+{
+    protected $fillable = [
+        'sender_id',
+        'beneficiary_id',
+        'amount',
+        'currency_from',
+        'currency_to',
+        'exchange_rate',
+        'fee',
+        'total_amount',
+        'status',
+        'initiated_at',
+        'completed_at',
+        'reference',
+        'promotion_id',
+        'discount_amount',
+        'speed',
+        'estimated_delivery_at',
+    ];
+
+    protected $casts = [
+        'initiated_at' => 'datetime',
+        'completed_at' => 'datetime',
+        'estimated_delivery_at' => 'datetime',
+    ];
+
+    public function sender()
+    {
+        return $this->belongsTo(User::class, 'sender_id');
+    }
+
+    public function beneficiary()
+    {
+        return $this->belongsTo(Beneficiary::class);
+    }
+
+    public function events()
+    {
+        return $this->hasMany(Transfer_Event::class);
+    }
+
+    public function payment()
+    {
+        return $this->hasOne(Payment::class);
+    }
+
+    public function promotion()
+    {
+        return $this->belongsTo(Promotion::class);
+    }
+
+    public function currencyFrom()
+    {
+        return $this->belongsTo(Currency::class, 'currency_from', 'code');
+    }
+
+    public function currencyTo()
+    {
+        return $this->belongsTo(Currency::class, 'currency_to', 'code');
+    }
+
+    public function exchangeRateRecord()
+    {
+        return $this->hasOne(Exchange_Rate::class, 'currency_from', 'currency_from')
+            ->whereColumn('exchange_rates.currency_to', 'transfers.currency_to');
+    }
+
+    /**
+     * Business-friendly status name for external consumers.
+     *
+     * queued            -> initiated
+     * paid              -> pending
+     * in_progress       -> processing
+     * available_for_pickup -> ready_for_pickup
+     * completed         -> completed
+     * failed / refunded -> failed
+     * disputed          -> disputed
+     */
+    public function getBusinessStatusAttribute(): string
+    {
+        return match ($this->status) {
+            'queued' => 'initiated',
+            'paid' => 'pending',
+            'in_progress' => 'processing',
+            'available_for_pickup' => 'ready_for_pickup',
+            'completed' => 'completed',
+            'failed', 'refunded' => 'failed',
+            default => $this->status,
+        };
+    }
+}
+
+
+
+
+
+\app\Models\User.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Laravel\Sanctum\HasApiTokens;   
+use Illuminate\Notifications\Notifiable;
+
+class User extends Authenticatable
+{
+    use HasApiTokens, HasFactory, Notifiable;  
+
+    protected $fillable = [
+        'name',
+        'email',
+        'password',
+        'phone',
+        'role_id',
+        'status',
+        'provider_name',
+        'provider_id',
+        'avatar_url',
+    ];
+
+    protected $hidden = [
+        'password',
+        'remember_token',
+    ];
+
+    public function role()
+    {
+        return $this->belongsTo(Role::class);
+    }
+
+    public function verifications()
+    {
+        return $this->hasMany(UserVerification::class);
+    }
+
+    public function bankAccounts()
+    {
+        return $this->hasMany(UserBankAccount::class);
+    }
+}
+
+
+
+
+
+\app\Models\UserBankAccount.php
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class UserBankAccount extends Model
+{
+    protected $fillable = [
+        'user_id',
+        'bank_name',
+        'account_number',
+        'currency_code',
+        'status',
+        'verified_at',
+    ];
+
+    protected $casts = [
+        'verified_at' => 'datetime',
+    ];
+
+    protected $table = 'user_bank_accounts';
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function currency()
+    {
+        return $this->belongsTo(Currency::class, 'currency_code', 'code');
+    }
+}
+
+
+
+
+
+\app\Models\UserVerification.php
+
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class UserVerification extends Model
+{
+    protected $fillable = [
+        'user_id',
+        'id_type',
+        'id_number',
+        'document_path',
+        'status',
+        'verified_at',
+    ];
+
+    protected $casts = [
+        'verified_at' => 'datetime',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+
+
+
+
+\app\Services\ExchangeRateService.php
+
+<?php
+
+namespace App\Services;
+
+use App\Models\Currency;
+use App\Models\Exchange_Rate;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
+
+class ExchangeRateService
+{
+    private ?string $apiKey;
+    private string $apiUrl;
+
+    public function __construct()
+    {
+        $this->apiKey = config('services.exchange_rate.api_key') ?: env('EXCHANGE_RATE_API_KEY') ?: null;
+        $this->apiUrl = config('services.exchange_rate.api_url', env('EXCHANGE_RATE_API_URL', 'https://v6.exchangerate-api.com/v6'));
+    }
+
+    public function fetchRate(string $from, string $to): ?float
+    {
+        try {
+            if (empty($this->apiKey)) {
+                Log::error("Exchange rate API key is not configured.");
+                return null;
+            }
+
+            $cacheKey = "exchange_rate_{$from}_{$to}";
+            if (Cache::has($cacheKey)) {
+                return (float) Cache::get($cacheKey);
+            }
+
+            // Primary: pair endpoint
+            $response = Http::timeout(10)->get(
+                "{$this->apiUrl}/{$this->apiKey}/pair/{$from}/{$to}"
+            );
+
+            if ($response->successful() && isset($response['conversion_rate'])) {
+                $rate = (float) $response['conversion_rate'];
+                $this->saveRate($from, $to, $rate);
+                Cache::put($cacheKey, $rate, now()->addHour());
+                return $rate;
+            }
+
+            // Fallback: latest endpoint
+            $response = Http::timeout(10)->get(
+                "{$this->apiUrl}/{$this->apiKey}/latest/{$from}"
+            );
+
+            if ($response->successful() && isset($response['conversion_rates'][$to])) {
+                $rate = (float) $response['conversion_rates'][$to];
+                $this->saveRate($from, $to, $rate);
+                Cache::put($cacheKey, $rate, now()->addHour());
+                return $rate;
+            }
+
+            Log::warning("Failed to fetch exchange rate {$from} → {$to}");
+            return null;
+
+        } catch (\Exception $e) {
+            Log::error("Exchange rate API error: " . $e->getMessage());
+            return null;
+        }
+    }
+
+    public function getRate(string $from, string $to, bool $forceRefresh = false): ?float
+    {
+        if ($from === $to) {
+            return 1.0;
+        }
+
+        if (!$forceRefresh) {
+            $exchangeRate = Exchange_Rate::where('currency_from', $from)
+                ->where('currency_to', $to)
+                ->where('last_updated', '>=', now()->subDay())
+                ->first();
+
+            if ($exchangeRate) {
+                return (float) $exchangeRate->rate;
+            }
+        }
+
+        return $this->fetchRate($from, $to);
+    }
+
+    public function saveRate(string $from, string $to, float $rate): Exchange_Rate
+    {
+        return Exchange_Rate::updateOrCreate(
+            [
+                'currency_from' => $from,
+                'currency_to'   => $to,
+            ],
+            [
+                'rate'         => $rate,
+                'last_updated' => now(),
+            ]
+        );
+    }
+
+    public function convert(float $amount, string $from, string $to): ?float
+    {
+        $rate = $this->getRate($from, $to);
+
+        if ($rate === null) {
+            return null;
+        }
+
+        return $amount * $rate;
+    }
+
+    public function updateRatesForBase(string $baseCurrency): array
+    {
+        $baseCurrency = strtoupper($baseCurrency);
+
+        if (empty($this->apiKey)) {
+            Log::error("Exchange rate API key is not configured.");
+            return [];
+        }
+
+        try {
+            // Single call to latest endpoint
+            $response = Http::timeout(10)->get(
+                "{$this->apiUrl}/{$this->apiKey}/latest/{$baseCurrency}"
+            );
+
+            if (!$response->successful() || !isset($response['conversion_rates'])) {
+                Log::warning('Failed to fetch latest rates for base', [
+                    'base'   => $baseCurrency,
+                    'status' => $response->status(),
+                    'body'   => $response->body(),
+                ]);
+                return [];
+            }
+
+            $apiRates = $response['conversion_rates'];
+
+            // Only care about currencies that exist in DB
+            $currencies = Currency::where('code', '!=', $baseCurrency)->pluck('code');
+            $updated = [];
+
+            foreach ($currencies as $code) {
+                $code = strtoupper($code);
+
+                if (!isset($apiRates[$code])) {
+                    // API doesn't support this currency, skip it
+                    continue;
+                }
+
+                $rate = (float) $apiRates[$code];
+                $this->saveRate($baseCurrency, $code, $rate);
+                $updated[$code] = $rate;
+            }
+
+            return $updated;
+
+        } catch (\Exception $e) {
+            Log::error('Exchange rate API error in updateRatesForBase', [
+                'base'    => $baseCurrency,
+                'message' => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+}
+
+
+
+
+
+\app\Services\PaymentService.php
+
+<?php
+
+namespace App\Services;
+
+use App\Models\Payment;
+use App\Models\Transfer;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+
+class PaymentService
+{
+    
+    public function createPayment(int $transferId, array $data): Payment
+    {
+        return DB::transaction(function () use ($transferId, $data) {
+            $transfer = Transfer::findOrFail($transferId);
+
+            // Validate transfer can accept payment
+            if (!in_array($transfer->status, ['queued'])) {
+                throw new \Exception('Transfer is not in a state that accepts payment');
+            }
+
+            $gateway = $data['gateway'] ?? 'stripe';
+            $amount = $transfer->total_amount;
+            $currency = $transfer->currency_from;
+
+            // Call mock payment gateway to authorize payment
+            $gatewayResponse = $this->mockGatewayAuthorize($gateway, $amount, $currency, $data);
+
+            // Create payment record
+            $payment = Payment::create([
+                'transfer_id' => $transferId,
+                'amount' => $amount,
+                'currency_code' => $currency,
+                'gateway' => $gateway,
+                'gateway_ref' => $gatewayResponse['reference'] ?? $data['gateway_ref'] ?? null,
+                'status' => $gatewayResponse['status'] === 'success' ? 'authorized' : 'failed',
+                'authorized_at' => $gatewayResponse['status'] === 'success' ? now() : null,
+            ]);
+
+            // Update transfer status
+            if ($gatewayResponse['status'] === 'success') {
+                $transfer->update(['status' => 'paid']);
+                
+                // Create transfer event
+                $transfer->events()->create([
+                    'status' => 'paid',
+                    'note' => "Payment authorized via {$gateway}",
+                    'actor_type' => 'system',
+                ]);
+            } else {
+                $transfer->update(['status' => 'failed']);
+                
+                // Create transfer event
+                $transfer->events()->create([
+                    'status' => 'failed',
+                    'note' => "Payment authorization failed: {$gatewayResponse['message']}",
+                    'actor_type' => 'system',
+                ]);
+                
+                throw new \Exception("Payment authorization failed: {$gatewayResponse['message']}");
+            }
+
+            return $payment;
+        });
+    }
+
+   
+    public function capturePayment(int $paymentId): Payment
+    {
+        $payment = Payment::findOrFail($paymentId);
+
+        if ($payment->status !== 'authorized') {
+            throw new \Exception('Payment must be authorized to capture');
+        }
+
+        // Call mock gateway to capture payment
+        $gatewayResponse = $this->mockGatewayCapture($payment->gateway, $payment->gateway_ref);
+
+        if ($gatewayResponse['status'] !== 'success') {
+            throw new \Exception("Payment capture failed: {$gatewayResponse['message']}");
+        }
+
+        $payment->update([
+            'status' => 'captured',
+            'captured_at' => now(),
+        ]);
+
+        // Update transfer status
+        $transfer = $payment->transfer;
+        $transfer->update(['status' => 'in_progress']);
+        
+        // Create transfer event
+        $transfer->events()->create([
+            'status' => 'in_progress',
+            'note' => 'Payment captured, transfer processing',
+            'actor_type' => 'system',
+        ]);
+
+        return $payment->fresh();
+    }
+
+  
+    public function refundPayment(int $paymentId, ?float $amount = null): Payment
+    {
+        $payment = Payment::findOrFail($paymentId);
+
+        if (!in_array($payment->status, ['captured', 'authorized'])) {
+            throw new \Exception('Payment cannot be refunded in current status');
+        }
+
+        $refundAmount = $amount ?? $payment->amount;
+
+        // Validate refund amount
+        if ($refundAmount > $payment->amount) {
+            throw new \Exception('Refund amount cannot exceed payment amount');
+        }
+
+        // Call mock gateway to process refund
+        $gatewayResponse = $this->mockGatewayRefund($payment->gateway, $payment->gateway_ref, $refundAmount);
+
+        if ($gatewayResponse['status'] !== 'success') {
+            throw new \Exception("Payment refund failed: {$gatewayResponse['message']}");
+        }
+
+        $payment->update([
+            'status' => 'refunded',
+            'refunded_at' => now(),
+        ]);
+
+        // Update transfer status
+        $transfer = $payment->transfer;
+        $transfer->update(['status' => 'refunded']);
+        
+        // Create transfer event
+        $transfer->events()->create([
+            'status' => 'refunded',
+            'note' => "Payment refunded: {$refundAmount} {$payment->currency_code}",
+            'actor_type' => 'system',
+        ]);
+
+        return $payment->fresh();
+    }
+
+ 
+    private function mockGatewayAuthorize(string $gateway, float $amount, string $currency, array $data): array
+    {
+        // Simulate API call delay
+        usleep(100000); // 0.1 seconds
+
+        // Simulate different gateway behaviors
+        $gatewayRefs = [
+            'stripe' => 'ch_' . strtoupper(substr(md5(uniqid()), 0, 24)),
+            'paypal' => 'PAY-' . strtoupper(substr(md5(uniqid()), 0, 17)),
+            'checkout' => 'pay_' . strtoupper(substr(md5(uniqid()), 0, 20)),
+        ];
+
+        // Mock: Simulate failure for very large amounts (for testing)
+        if ($amount > 1000000) {
+            return [
+                'status' => 'failed',
+                'message' => 'Amount exceeds maximum limit',
+                'reference' => null,
+            ];
+        }
+
+        // Mock: Simulate failure for specific test scenarios
+        if (isset($data['test_fail']) && $data['test_fail'] === true) {
+            return [
+                'status' => 'failed',
+                'message' => 'Payment declined by bank',
+                'reference' => null,
+            ];
+        }
+
+        // Success response
+        return [
+            'status' => 'success',
+            'message' => 'Payment authorized successfully',
+            'reference' => $gatewayRefs[$gateway] ?? 'ref_' . strtoupper(substr(md5(uniqid()), 0, 20)),
+            'gateway' => $gateway,
+            'authorized_at' => now()->toIso8601String(),
+        ];
+    }
+
+   
+    private function mockGatewayCapture(string $gateway, ?string $gatewayRef): array
+    {
+        // Simulate API call delay
+        usleep(100000); // 0.1 seconds
+
+        if (empty($gatewayRef)) {
+            return [
+                'status' => 'failed',
+                'message' => 'Invalid gateway reference',
+            ];
+        }
+
+        // Success response
+        return [
+            'status' => 'success',
+            'message' => 'Payment captured successfully',
+            'reference' => $gatewayRef,
+            'captured_at' => now()->toIso8601String(),
+        ];
+    }
+
+
+    private function mockGatewayRefund(string $gateway, ?string $gatewayRef, float $amount): array
+    {
+        // Simulate API call delay
+        usleep(150000); // 0.15 seconds
+
+        if (empty($gatewayRef)) {
+            return [
+                'status' => 'failed',
+                'message' => 'Invalid gateway reference',
+            ];
+        }
+
+        // Success response
+        return [
+            'status' => 'success',
+            'message' => 'Refund processed successfully',
+            'reference' => $gatewayRef,
+            'refund_amount' => $amount,
+            'refunded_at' => now()->toIso8601String(),
+        ];
+    }
+}
+
+
+
+
+
+
+\app\Services\PromotionService.php
+
+
+<?php
+
+namespace App\Services;
+
+use App\Models\Promotion;
+
+class PromotionService
+{
+   
+    public function validateAndCalculate(string $code, float $amount, ?int $destinationCountryId = null): array
+    {
+        $promo = Promotion::whereRaw('LOWER(code) = ?', [mb_strtolower($code)])->first();
+
+        if (!$promo || !$promo->isValidFor($amount, $destinationCountryId)) {
+            throw new \Exception('Invalid or expired promo code');
+        }
+
+        // Base discount
+        $discount = 0.0;
+
+        if ($promo->discount_type === 'percent') {
+            $discount = $amount * ((float) $promo->discount_value) / 100;
+        } else {
+            $discount = (float) $promo->discount_value;
+        }
+
+        // Apply max cap if set
+        if ($promo->max_discount !== null) {
+            $discount = min($discount, (float) $promo->max_discount);
+        }
+
+        // Never allow discount greater than amount
+        $discount = min($discount, $amount);
+
+        return [$promo, round($discount, 2)];
+    }
+}
+
+
+
+
+
+
+\app\Services\TransferService.php
+
+<?php
+
+namespace App\Services;
+
+use App\Models\Transfer;
+use App\Models\Transfer_Event;
+use App\Models\Transfer_Fee;
+use App\Models\Promotion;
+use App\Models\Beneficiary;
+use App\Models\User;
+use App\Models\UserVerification;
+use App\Services\ExchangeRateService;
+use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+
+class TransferService
+{
+    public function __construct(
+        private ExchangeRateService $exchangeRateService
+    ) {}
+
+   
+    public function calculateFee(float $amount, int $countryFromId, int $countryToId): float
+    {
+        // Validate amount
+        if ($amount <= 0) {
+            throw new \Exception('Transfer amount must be greater than 0');
+        }
+
+        // Find matching fee rule
+        $feeRule = Transfer_Fee::where('country_from_id', $countryFromId)
+            ->where('country_to_id', $countryToId)
+            ->where('min_amount', '<=', $amount)
+            ->where('max_amount', '>=', $amount)
+            ->first();
+
+        if (!$feeRule) {
+            // Default fee: 2% of amount with minimum $5
+            Log::info("No fee rule found for countries {$countryFromId} -> {$countryToId}, using default fee");
+            return max($amount * 0.02, 5.0);
+        }
+
+        // Calculate fee: fixed + percentage
+        $fee = $feeRule->fee_fixed ?? 0;
+        $fee += ($amount * ($feeRule->fee_percent ?? 0) / 100);
+
+        return round($fee, 2);
+    }
+
+   
+    public function createTransfer(array $data): Transfer
+    {
+        return DB::transaction(function () use ($data) {
+            // Validate required fields
+            $requiredFields = ['sender_id', 'beneficiary_id', 'amount', 'currency_from', 'currency_to'];
+            foreach ($requiredFields as $field) {
+                if (!isset($data[$field])) {
+                    throw new \Exception("Missing required field: {$field}");
+                }
+            }
+
+            // Validate amount
+            $amount = (float) $data['amount'];
+            if ($amount <= 0) {
+                throw new \Exception('Transfer amount must be greater than 0');
+            }
+
+            // Validate minimum amount (e.g., $1)
+            if ($amount < 1) {
+                throw new \Exception('Transfer amount must be at least 1');
+            }
+
+            // Validate maximum amount (e.g., $100,000)
+            if ($amount > 100000) {
+                throw new \Exception('Transfer amount exceeds maximum limit of 100,000');
+            }
+
+            // Validate beneficiary exists and belongs to sender
+            $beneficiary = Beneficiary::where('id', $data['beneficiary_id'])
+                ->where('user_id', $data['sender_id'])
+                ->first();
+
+            if (!$beneficiary) {
+                throw new \Exception('Beneficiary not found or does not belong to you');
+            }
+
+            // Validate sender exists
+            $sender = User::find($data['sender_id']);
+            if (!$sender) {
+                throw new \Exception('Sender not found');
+            }
+
+            // Validate currencies are different 
+            if ($data['currency_from'] === $data['currency_to']) {
+                // Allow same currency transfers, but log it
+                Log::info("Same currency transfer: {$data['currency_from']}");
+            }
+
+            // Get exchange rate
+            $exchangeRate = $this->exchangeRateService->getRate(
+                $data['currency_from'],
+                $data['currency_to']
+            );
+
+            if ($exchangeRate === null) {
+                throw new \Exception('Unable to fetch exchange rate. Please try again later.');
+            }
+
+            // Get sender's country
+            // Priority: 1. User verification, 2. Default country (ID: 1)
+            $senderCountryId = $this->getSenderCountryId($data['sender_id']);
+
+            // Calculate fee
+            $fee = $this->calculateFee(
+                $amount,
+                $senderCountryId,
+                $beneficiary->country_id
+            );
+
+            // Handle optional promotion / discount
+            $promotionId = $data['promotion_id'] ?? null;
+            $discountAmount = isset($data['discount_amount']) ? (float) $data['discount_amount'] : 0.0;
+
+            if ($discountAmount < 0) {
+                throw new \Exception('Discount amount cannot be negative');
+            }
+
+            // Re-validate discount does not exceed amount + fee
+            $maxDiscount = $amount + $fee;
+            if ($discountAmount > $maxDiscount) {
+                throw new \Exception('Discount amount is too large for this transfer');
+            }
+
+            // Calculate total amount (amount + fee - discount)
+            $totalAmount = max(0, $amount + $fee - $discountAmount);
+
+            // Generate unique reference code
+            $reference = $this->generateReference();
+
+            // Create transfer
+            $transfer = Transfer::create([
+                'sender_id' => $data['sender_id'],
+                'beneficiary_id' => $data['beneficiary_id'],
+                'amount' => $amount,
+                'currency_from' => strtoupper($data['currency_from']),
+                'currency_to' => strtoupper($data['currency_to']),
+                'exchange_rate' => $exchangeRate,
+                'fee' => $fee,
+                'total_amount' => $totalAmount,
+                'status' => 'queued',
+                'initiated_at' => now(),
+                'reference' => $reference,
+                'promotion_id' => $promotionId,
+                'discount_amount' => $discountAmount,
+                'speed' => $data['speed'] ?? null,
+                'estimated_delivery_at' => $data['estimated_delivery_at'] ?? null,
+            ]);
+
+            // Optionally increment promotion usage when attached
+            if ($promotionId) {
+                Promotion::where('id', $promotionId)->increment('used_count');
+            }
+
+            // Create initial transfer event
+            $this->createEvent(
+                $transfer->id,
+                'queued',
+                'Transfer initiated successfully',
+                'user',
+                $data['sender_id']
+            );
+
+            Log::info("Transfer created", [
+                'transfer_id' => $transfer->id,
+                'reference' => $reference,
+                'sender_id' => $data['sender_id'],
+                'amount' => $amount,
+            ]);
+
+            return $transfer->fresh();
+        });
+    }
+
+  
+   public function getSenderCountryId(int $userId): int
+    {
+        // Try to get from user's verification
+        
+        $verification = UserVerification::where('user_id', $userId)
+            ->where('status', 'approved')
+            ->latest()
+            ->first();
+
+      
+        // or store it in the users table
+        return 1; // Default country ID
+    }
+
+    public function updateStatus(int $transferId, string $status, ?string $note = null, ?string $actorType = 'system', ?int $actorId = null): Transfer
+    {
+        $transfer = Transfer::findOrFail($transferId);
+
+        // Validate status
+        $validStatuses = ['queued', 'paid', 'in_progress', 'available_for_pickup', 'completed', 'failed', 'refunded', 'disputed'];
+        if (!in_array($status, $validStatuses)) {
+            throw new \Exception("Invalid status: {$status}");
+        }
+
+        // Validate status transition (basic validation)
+        $currentStatus = $transfer->status;
+        if ($currentStatus === 'completed' && $status !== 'refunded' && $status !== 'disputed') {
+            throw new \Exception('Cannot change status of completed transfer');
+        }
+
+        if ($currentStatus === 'refunded') {
+            throw new \Exception('Cannot change status of refunded transfer');
+        }
+
+        // Update transfer
+        $transfer->update([
+            'status' => $status,
+            'completed_at' => in_array($status, ['completed', 'failed', 'refunded']) ? now() : null,
+        ]);
+
+        // Create event
+        $this->createEvent($transferId, $status, $note, $actorType, $actorId);
+
+        Log::info("Transfer status updated", [
+            'transfer_id' => $transferId,
+            'from' => $currentStatus,
+            'to' => $status,
+            'actor' => $actorType,
+        ]);
+
+        return $transfer->fresh();
+    }
+
+    public function createEvent(int $transferId, string $status, ?string $note = null, ?string $actorType = 'system', ?int $actorId = null): Transfer_Event
+    {
+        return Transfer_Event::create([
+            'transfer_id' => $transferId,
+            'status' => $status,
+            'note' => $note ?? "Status changed to {$status}",
+            'actor_type' => $actorType,
+            'actor_id' => $actorId,
+        ]);
+    }
+
+ 
+    private function generateReference(): string
+    {
+        $maxAttempts = 10;
+        $attempts = 0;
+
+        do {
+            $reference = 'TRF' . strtoupper(Str::random(10));
+            $attempts++;
+            
+            if ($attempts >= $maxAttempts) {
+                throw new \Exception('Failed to generate unique reference code');
+            }
+        } while (Transfer::where('reference', $reference)->exists());
+
+        return $reference;
+    }
+
+
+    public function cancelTransfer(int $transferId, int $userId): Transfer
+    {
+        $transfer = Transfer::where('id', $transferId)
+            ->where('sender_id', $userId)
+            ->firstOrFail();
+
+        // Only allow cancellation if transfer is queued or paid
+        if (!in_array($transfer->status, ['queued', 'paid'])) {
+            throw new \Exception("Transfer cannot be cancelled. Current status: {$transfer->status}");
+        }
+
+        // If payment was made, it should be refunded first
+        if ($transfer->status === 'paid' && $transfer->payment) {
+          
+            Log::warning("Cancelling transfer with payment", [
+                'transfer_id' => $transferId,
+                'payment_id' => $transfer->payment->id,
+            ]);
+        }
+
+        return $this->updateStatus($transferId, 'failed', 'Transfer cancelled by user', 'user', $userId);
+    }
+
+
+    public function processRefund(int $transferId, int $adminId): Transfer
+    {
+        $transfer = Transfer::findOrFail($transferId);
+
+        // Only completed transfers can be refunded
+        if ($transfer->status !== 'completed') {
+            throw new \Exception("Only completed transfers can be refunded. Current status: {$transfer->status}");
+        }
+
+        // Check if payment exists and needs to be refunded
+        if ($transfer->payment && !in_array($transfer->payment->status, ['refunded'])) {
+            Log::info("Refunding transfer payment", [
+                'transfer_id' => $transferId,
+                'payment_id' => $transfer->payment->id,
+            ]);
+            
+        }
+
+        return $this->updateStatus($transferId, 'refunded', 'Transfer refunded by admin', 'admin', $adminId);
+    }
+}
+
+
+
+
+
+
+\app\Support\NotificationHelper.php
+
+<?php
+
+namespace App\Support;
+
+use App\Models\Agent;
+use App\Models\Transfer;
+use App\Models\User;
+
+/**
+ * Thin wrapper for Person 4's notification helper.
+ * Replace the internals of these methods when the real implementation is ready.
+ */
+class NotificationHelper
+{
+    public static function agentStatusChanged(Agent $agent, string $status): void
+    {
+        $user = $agent->user;
+
+        if (! $user instanceof User) {
+            return;
+        }
+
+        // Person 4: implement real notification call here.
+        // Example placeholder:
+        // Person4Notifier::send($user, 'agent_status_changed', [...]);
+    }
+
+    public static function transferReadyForPickup(Transfer $transfer): void
+    {
+        // Person 4: notify sender/beneficiary that transfer is ready for pickup.
+    }
+
+    public static function transferCashedOut(Transfer $transfer): void
+    {
+        // Person 4: notify sender/beneficiary that transfer has been cashed out.
+    }
+}
+
+
+
+
+
+
+
+\bootstrap\app.php
+
+<?php
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application Name
+    |--------------------------------------------------------------------------
+    |
+    | This value is the name of your application, which will be used when the
+    | framework needs to place the application's name in a notification or
+    | other UI elements where an application name needs to be displayed.
+    |
+    */
+
+    'name' => env('APP_NAME', 'Laravel'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application Environment
+    |--------------------------------------------------------------------------
+    |
+    | This value determines the "environment" your application is currently
+    | running in. This may determine how you prefer to configure various
+    | services the application utilizes. Set this in your ".env" file.
+    |
+    */
+
+    'env' => env('APP_ENV', 'production'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application Debug Mode
+    |--------------------------------------------------------------------------
+    |
+    | When your application is in debug mode, detailed error messages with
+    | stack traces will be shown on every error that occurs within your
+    | application. If disabled, a simple generic error page is shown.
+    |
+    */
+
+    'debug' => (bool) env('APP_DEBUG', false),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application URL
+    |--------------------------------------------------------------------------
+    |
+    | This URL is used by the console to properly generate URLs when using
+    | the Artisan command line tool. You should set this to the root of
+    | the application so that it's available within Artisan commands.
+    |
+    */
+
+    'url' => env('APP_URL', 'http://localhost'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application Timezone
+    |--------------------------------------------------------------------------
+    |
+    | Here you may specify the default timezone for your application, which
+    | will be used by the PHP date and date-time functions. The timezone
+    | is set to "UTC" by default as it is suitable for most use cases.
+    |
+    */
+
+    'timezone' => 'UTC',
+
+    /*
+    |--------------------------------------------------------------------------
+    | Application Locale Configuration
+    |--------------------------------------------------------------------------
+    |
+    | The application locale determines the default locale that will be used
+    | by Laravel's translation / localization methods. This option can be
+    | set to any locale for which you plan to have translation strings.
+    |
+    */
+
+    'locale' => env('APP_LOCALE', 'en'),
+
+    'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
+
+    'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Encryption Key
+    |--------------------------------------------------------------------------
+    |
+    | This key is utilized by Laravel's encryption services and should be set
+    | to a random, 32 character string to ensure that all encrypted values
+    | are secure. You should do this prior to deploying the application.
+    |
+    */
+
+    'cipher' => 'AES-256-CBC',
+
+    'key' => env('APP_KEY'),
+
+    'previous_keys' => [
+        ...array_filter(
+            explode(',', (string) env('APP_PREVIOUS_KEYS', ''))
+        ),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Maintenance Mode Driver
+    |--------------------------------------------------------------------------
+    |
+    | These configuration options determine the driver used to determine and
+    | manage Laravel's "maintenance mode" status. The "cache" driver will
+    | allow maintenance mode to be controlled across multiple machines.
+    |
+    | Supported drivers: "file", "cache"
+    |
+    */
+
+    'maintenance' => [
+        'driver' => env('APP_MAINTENANCE_DRIVER', 'file'),
+        'store' => env('APP_MAINTENANCE_STORE', 'database'),
+    ],
+
+];
+
+
+
+
+\config\sanctum.php
+
+<?php
+
+use Laravel\Sanctum\Sanctum;
+
+return [
+
+    /*
+    |--------------------------------------------------------------------------
+    | Stateful Domains
+    |--------------------------------------------------------------------------
+    |
+    | Requests from the following domains / hosts will receive stateful API
+    | authentication cookies. Typically, these should include your local
+    | and production domains which access your API via a frontend SPA.
+    |
+    */
+
+    'stateful' => explode(',', env('SANCTUM_STATEFUL_DOMAINS', sprintf(
+        '%s%s',
+        'localhost,localhost:3000,127.0.0.1,127.0.0.1:8000,::1',
+        Sanctum::currentApplicationUrlWithPort(),
+        // Sanctum::currentRequestHost(),
+    ))),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sanctum Guards
+    |--------------------------------------------------------------------------
+    |
+    | This array contains the authentication guards that will be checked when
+    | Sanctum is trying to authenticate a request. If none of these guards
+    | are able to authenticate the request, Sanctum will use the bearer
+    | token that's present on an incoming request for authentication.
+    |
+    */
+
+    'guard' => ['web'],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Expiration Minutes
+    |--------------------------------------------------------------------------
+    |
+    | This value controls the number of minutes until an issued token will be
+    | considered expired. This will override any values set in the token's
+    | "expires_at" attribute, but first-party sessions are not affected.
+    |
+    */
+
+    'expiration' => null,
+
+    /*
+    |--------------------------------------------------------------------------
+    | Token Prefix
+    |--------------------------------------------------------------------------
+    |
+    | Sanctum can prefix new tokens in order to take advantage of numerous
+    | security scanning initiatives maintained by open source platforms
+    | that notify developers if they commit tokens into repositories.
+    |
+    | See: https://docs.github.com/en/code-security/secret-scanning/about-secret-scanning
+    |
+    */
+
+    'token_prefix' => env('SANCTUM_TOKEN_PREFIX', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sanctum Middleware
+    |--------------------------------------------------------------------------
+    |
+    | When authenticating your first-party SPA with Sanctum you may need to
+    | customize some of the middleware Sanctum uses while processing the
+    | request. You may change the middleware listed below as required.
+    |
+    */
+
+    'middleware' => [
+        'authenticate_session' => Laravel\Sanctum\Http\Middleware\AuthenticateSession::class,
+        'encrypt_cookies' => Illuminate\Cookie\Middleware\EncryptCookies::class,
+        'validate_csrf_token' => Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
+    ],
+
+];
+
+
+
+
+
+\database\factories\UserFactory.php
+
+<?php
+
+namespace Database\Factories;
+
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+/**
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\User>
+ */
+class UserFactory extends Factory
+{
+    /**
+     * The current password being used by the factory.
+     */
+    protected static ?string $password;
+
+    /**
+     * Define the model's default state.
+     *
+     * @return array<string, mixed>
+     */
+    public function definition(): array
+    {
+        return [
+            'name' => fake()->name(),
+            'email' => fake()->unique()->safeEmail(),
+            'email_verified_at' => now(),
+            'password' => static::$password ??= Hash::make('password'),
+            'remember_token' => Str::random(10),
+        ];
+    }
+
+    /**
+     * Indicate that the model's email address should be unverified.
+     */
+    public function unverified(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'email_verified_at' => null,
+        ]);
+    }
+}
+
+
+
+
+
+\database\seeders\AdminUserSeeder.php
+
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
+use App\Models\User;
+
+class AdminUserSeeder extends Seeder
+{
+    public function run(): void
+    {
+        User::updateOrCreate(
+            ['email' => 'admin@example.com'],
+            [
+                'name'     => 'System Admin',
+                'password' => Hash::make('password'), 
+                'role_id'  => 1,                       
+                'status'   => 'active',
+            ]
+        );
+    }
+}
+
+
+
+
+
+\database\seeders\CountrySeeder.php
+
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+
+class CountrySeeder extends Seeder
+{
+    public function run(): void
+    {
+        $countries = [
+            ['iso2' => 'LB', 'name' => 'Lebanon'],
+            ['iso2' => 'US', 'name' => 'United States'],
+            ['iso2' => 'GB', 'name' => 'United Kingdom'],
+            ['iso2' => 'FR', 'name' => 'France'],
+            ['iso2' => 'DE', 'name' => 'Germany'],
+            ['iso2' => 'CA', 'name' => 'Canada'],
+            ['iso2' => 'AU', 'name' => 'Australia'],
+            ['iso2' => 'SA', 'name' => 'Saudi Arabia'],
+            ['iso2' => 'AE', 'name' => 'United Arab Emirates'],
+            ['iso2' => 'TR', 'name' => 'Turkey'],
+            ['iso2' => 'QA', 'name' => 'Qatar'],
+            ['iso2' => 'EG', 'name' => 'Egypt'],
+            ['iso2' => 'JO', 'name' => 'Jordan'],
+            ['iso2' => 'CY', 'name' => 'Cyprus'],
+            ['iso2' => 'ES', 'name' => 'Spain'],
+            ['iso2' => 'IT', 'name' => 'Italy'],
+            ['iso2' => 'NL', 'name' => 'Netherlands'],
+            ['iso2' => 'CH', 'name' => 'Switzerland'],
+            ['iso2' => 'BR', 'name' => 'Brazil'],
+            ['iso2' => 'AR', 'name' => 'Argentina'],
+            ['iso2' => 'IN', 'name' => 'India'],
+            ['iso2' => 'CN', 'name' => 'China'],
+            ['iso2' => 'JP', 'name' => 'Japan'],
+            ['iso2' => 'KR', 'name' => 'South Korea'],
+        ];
+
+        DB::table('countries')->insert($countries);
+    }
+}
+
+
+
+
+
+\database\seeders\CurrencySeeder.php
+
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+
+class CurrencySeeder extends Seeder
+{
+    public function run()
+    {
+        $currencies = [
+            "USD", "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG",
+            "AZN", "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB",
+            "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLF",
+            "CLP", "CNH", "CNY", "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK",
+            "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "FOK", "GBP",
+            "GEL", "GGP", "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD", "HKD", "HNL",
+            "HRK", "HTG", "HUF", "IDR", "ILS", "IMP", "INR", "IQD", "IRR", "ISK",
+            "JEP", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KID", "KMF", "KRW",
+            "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD",
+            "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK",
+            "MXN", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR",
+            "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR", "RON", "RSD",
+            "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE",
+            "SLL", "SOS", "SRD", "SSP", "STN", "SYP", "SZL", "THB", "TJS", "TMT",
+            "TND", "TOP", "TRY", "TTD", "TVD", "TWD", "TZS", "UAH", "UGX", "UYU",
+            "UZS", "VES", "VND", "VUV", "WST", "XAF", "XCD", "XCG", "XDR", "XOF",
+            "XPF", "YER", "ZAR", "ZMW", "ZWG", "ZWL"
+        ];
+
+        foreach ($currencies as $code) {
+            DB::table('currencies')->insert([
+                'code' => $code,
+                'name' => $code,
+            ]);
+        }
+    }
+}
+
+
+
+
+
+\database\seeders\DatabaseSeeder.php
+
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Role;
+use App\Models\User;
+use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
+
+class DatabaseSeeder extends Seeder
+{
+    use WithoutModelEvents;
+
+    /**
+     * Seed the application's database.
+     */
+    public function run(): void
+    {
+        // 1) Seed roles (our new naming)
+        $adminRole = Role::firstOrCreate(['name' => 'Admin']);
+        $agentRole = Role::firstOrCreate(['name' => 'Agent']);
+        $userRole  = Role::firstOrCreate(['name' => 'User']);
+
+        // 2) Seed main admin user
+        User::firstOrCreate(
+            ['email' => 'admin@example.com'],
+            [
+                'name'     => 'Main Admin',
+                'password' => Hash::make('Admin123!'), // change later
+                'role_id'  => $adminRole->id,
+            ]
+        );
+
+        // 3) Other seeders you actually need
+        $this->call([
+            CurrencySeeder::class,
+            CountrySeeder::class,
+            TransferMethodSeeder::class,
+        ]);
+
+    }
+    
+}
+
+
+
+
+
+\database\seeders\RolesTableSeeder.php
+
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+
+class RolesTableSeeder extends Seeder
+{
+    public function run(): void
+    {
+        DB::table('roles')->insert([
+            ['id' => 1, 'name' => 'customer', 'permissions' => null],
+            ['id' => 2, 'name' => 'agent',    'permissions' => null],
+            ['id' => 3, 'name' => 'admin',    'permissions' => null],
+        ]);
+    }
+}
+
+
+
+
+
+\database\seeders\TransferMethodSeeder.php
+
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\DB;
+
+class TransferMethodSeeder extends Seeder
+{
+    public function run(): void
+    {
+        $methods = [
+            [
+                'name' => 'Bank Deposit',
+                'description' => 'Send directly to a bank account',
+            ],
+            [
+                'name' => 'Cash Pickup',
+                'description' => 'Pickup cash at an agent location',
+            ],
+            [
+                'name' => 'Bank Transfer',
+                'description' => 'Traditional bank-to-bank transfer.',
+            ],
+            [
+                'name' => 'Cash Pickup',
+                'description' => 'Receiver collects cash from a partner location.',
+            ],
+            [
+                'name' => 'Mobile Wallet',
+                'description' => 'Funds delivered to a mobile money wallet.',
+            ],
+            [
+                'name' => 'ATM Withdrawal',
+                'description' => 'Cash withdrawal using a code at ATM.',
+            ],
+            [
+                'name' => 'Card-to-Card Transfer',
+                'description' => 'Direct transfer between debit/credit cards.',
+            ],
+        ];
+
+        DB::table('transfer_methods')->insert($methods);
+    }
+}
+
+
+
+
+
+
+\routes\api.php
+
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\AgentHourApiController;
+use App\Http\Controllers\Api\AgentTransactionApiController;
+use App\Http\Controllers\CurrencyController;
+use App\Http\Controllers\ExchangeRateController;
+use App\Http\Controllers\UserBankAccountController;
+use App\Http\Controllers\BeneficiaryController;
+use App\Http\Controllers\TransferController;
+use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\TransferEventController;
+use App\Http\Controllers\TransferFeeController;
+use App\Http\Controllers\AuthController;
+use App\Http\Controllers\UserVerificationController;
+use App\Http\Controllers\UserController;
+
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+|
+| These routes are automatically prefixed with /api and use the "api"
+| middleware group. Do NOT add "api" in the URIs here.
+|
+*/
+
+/*
+|--------------------------------------------------------------------------
+| PUBLIC ROUTES
+|--------------------------------------------------------------------------
+*/
+
+// Currencies
+Route::prefix('currencies')->group(function () {
+    Route::get('/', [CurrencyController::class, 'index']);
+    Route::get('/{code}', [CurrencyController::class, 'show']);
+});
+
+// Exchange Rates
+Route::prefix('exchange-rates')->group(function () {
+    Route::get('/', [ExchangeRateController::class, 'index']);
+    Route::get('/convert', [ExchangeRateController::class, 'convert']);
+    Route::get('/{from}/{to}', [ExchangeRateController::class, 'show']);
+});
+
+// Auth (public)
+Route::post('/auth/register', [AuthController::class, 'register']);
+Route::post('/auth/login',    [AuthController::class, 'login']);
+Route::post('/auth/social',   [AuthController::class, 'socialLogin']);
+
+/*
+|--------------------------------------------------------------------------
+| AGENT PUBLIC / PROTECTED API (from teammates)
+|--------------------------------------------------------------------------
+*/
+
+// Public agent hours (no login required)
+Route::get('/agents/{agent}/hours',[AgentHourApiController::class, 'show']
+)->name('api.agents.hours.show');
+
+// Protected agent APIs (session auth via "web" guard OR Sanctum token)
+Route::middleware(['auth:sanctum'])->group(function () {
+    Route::put(
+        '/agents/{agent}/hours',
+        [AgentHourApiController::class, 'update']
+    )->name('api.agents.hours.update');
+
+    Route::get(
+        '/agents/{agent}/transactions',
+        [AgentTransactionApiController::class, 'index']
+    )->name('api.agents.transactions.index');
+
+    Route::post(
+        '/agents/{agent}/transactions/process',
+        [AgentTransactionApiController::class, 'process']
+    )->name('api.agents.transactions.process');
+});
+
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATED USER APIs (main app, using Sanctum)
+|--------------------------------------------------------------------------
+|
+| These are the APIs your React Native app should call **after login**.
+| Guard: auth:sanctum
+|
+*/
+
+Route::middleware(['auth:sanctum'])->group(function () {
+
+    // ---- Auth / Profile ----
+    Route::post('/auth/logout', [AuthController::class, 'logout']);
+
+    Route::get('/me',  [UserController::class, 'me']);
+    Route::put('/me',  [UserController::class, 'update']);
+    
+Route::middleware(['auth:sanctum'])->group(function () {
+
+    // User KYC submit + view (any logged-in user)
+    Route::post('/kyc', [UserVerificationController::class, 'store']);
+    Route::get('/kyc',  [UserVerificationController::class, 'show']);
+
+    // KYC admin (only Admin role by NAME)
+    Route::middleware('role:Admin')->prefix('kyc')->group(function () {
+        Route::get('/pending',       [UserVerificationController::class, 'pending']);
+        Route::post('/{id}/approve', [UserVerificationController::class, 'approve']);
+        Route::post('/{id}/reject',  [UserVerificationController::class, 'reject']);
+    });
+
+    // Bank Accounts – no role restriction, just KYC verified
+    // Actions for the CUSTOMER (must have KYC)
+Route::middleware('kyc_verified')->prefix('bank-accounts')->group(function () {
+    Route::get('/',      [UserBankAccountController::class, 'index']);
+    Route::post('/',     [UserBankAccountController::class, 'store']);
+    Route::get('/{id}',  [UserBankAccountController::class, 'show']);
+    Route::put('/{id}',  [UserBankAccountController::class, 'update']);
+    Route::delete('/{id}', [UserBankAccountController::class, 'destroy']);
+});
+
+// Verification by Admin/Agent (no KYC needed on THEIR account)
+Route::middleware(['auth:sanctum', 'role:Admin'])
+    ->post('/bank-accounts/{id}/verify', [UserBankAccountController::class, 'verify']);
+
+});
+
+
+    // ---- Beneficiaries ----
+    Route::prefix('beneficiaries')->group(function () {
+        Route::get('/',        [BeneficiaryController::class, 'index']);
+        Route::post('/',       [BeneficiaryController::class, 'store']);
+        Route::get('/{id}',    [BeneficiaryController::class, 'show']);
+        Route::put('/{id}',    [BeneficiaryController::class, 'update']);
+        Route::delete('/{id}', [BeneficiaryController::class, 'destroy']);
+    });
+
+    // ---- Transfers ----
+    Route::prefix('transfers')->group(function () {
+        Route::get('/',             [TransferController::class, 'index']);
+        Route::get('/summary',      [TransferController::class, 'summary']); // preview
+        Route::post('/',            [TransferController::class, 'store']);
+        Route::get('/{id}',         [TransferController::class, 'show']);
+        Route::get('/{id}/track',   [TransferController::class, 'track']);
+        Route::post('/{id}/cancel', [TransferController::class, 'cancel']);
+        Route::post('/{id}/refund', [TransferController::class, 'refund']);
+        Route::get('/{id}/events',  [TransferEventController::class, 'index']);
+    });
+
+    // ---- Payments ----
+    Route::prefix('payments')->group(function () {
+        Route::post('/',             [PaymentController::class, 'store']);
+        Route::get('/{id}',          [PaymentController::class, 'show']);
+        Route::post('/{id}/capture', [PaymentController::class, 'capture']);
+        Route::post('/{id}/refund',  [PaymentController::class, 'refund']);
+    });
+
+    // ---- Transfer Fees ----
+    Route::prefix('transfer-fees')->group(function () {
+        Route::get('/',            [TransferFeeController::class, 'index']);
+        Route::post('/calculate',  [TransferFeeController::class, 'calculate']);
+        Route::get('/{id}',        [TransferFeeController::class, 'show']);
+        Route::post('/',           [TransferFeeController::class, 'store']);   // Admin usage
+        Route::put('/{id}',        [TransferFeeController::class, 'update']);  // Admin usage
+        Route::delete('/{id}',     [TransferFeeController::class, 'destroy']); // Admin usage
+    });
+});
+
+
+
+

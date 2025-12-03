@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View, Platform } from 'react-native';
 import { useAppContext } from '../context/AppContext';
 import { validateEmail } from '../utils/validation';
 import AppScreen from '../components/AppScreen';
@@ -27,9 +27,9 @@ const SupportScreen = () => {
 
   const canSubmit = useMemo(() => name.trim().length > 2 && validateEmail(email) && message.trim().length > 5, [email, message, name]);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     try {
-      const ticket = submitSupportTicket({ name, email, message });
+      const ticket = await submitSupportTicket({ name, email, message });
       Alert.alert('Support request sent', `Ticket ${ticket.id} created successfully.`);
       setName('');
       setEmail('');
@@ -139,11 +139,15 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 20,
     marginBottom: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 2,
+    ...(Platform.OS === 'web' ? {
+      boxShadow: '0 4px 10px rgba(0, 0, 0, 0.05)',
+    } : {
+      shadowColor: '#000',
+      shadowOpacity: 0.05,
+      shadowOffset: { width: 0, height: 4 },
+      shadowRadius: 10,
+      elevation: 2,
+    }),
   },
   cardTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12 },
   input: {
@@ -193,11 +197,15 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     borderColor: '#e4e7ec',
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
-    elevation: 2,
+    ...(Platform.OS === 'web' ? {
+      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.05)',
+    } : {
+      shadowColor: '#000',
+      shadowOpacity: 0.05,
+      shadowOffset: { width: 0, height: 2 },
+      shadowRadius: 8,
+      elevation: 2,
+    }),
   },
   messageHeader: {
     flexDirection: 'row',

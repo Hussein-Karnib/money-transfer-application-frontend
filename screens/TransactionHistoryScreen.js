@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View, Platform } from 'react-native';
 import { useAppContext } from '../context/AppContext';
 import AppScreen from '../components/AppScreen';
 
@@ -84,11 +84,15 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 16,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 10,
-    elevation: 2,
+    ...(Platform.OS === 'web' ? {
+      boxShadow: '0 4px 10px rgba(0, 0, 0, 0.05)',
+    } : {
+      shadowColor: '#000',
+      shadowOpacity: 0.05,
+      shadowOffset: { width: 0, height: 4 },
+      shadowRadius: 10,
+      elevation: 2,
+    }),
   },
   counterpart: { fontSize: 16, fontWeight: '600', color: '#101828' },
   note: { fontSize: 13, color: '#475467', marginTop: 4 },

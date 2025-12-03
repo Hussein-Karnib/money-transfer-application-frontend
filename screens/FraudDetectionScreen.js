@@ -22,9 +22,14 @@ const FraudDetectionScreen = () => {
     };
   }, [fraudAlerts]);
 
-  const handleStatusUpdate = (alertId, newStatus) => {
-    updateFraudAlertStatus({ id: alertId, status: newStatus });
-    Alert.alert('Status Updated', `Fraud alert status changed to ${newStatus}`);
+  const handleStatusUpdate = async (alertId, newStatus) => {
+    try {
+      await updateFraudAlertStatus(alertId, newStatus);
+      Alert.alert('Status Updated', `Fraud alert status changed to ${newStatus}`);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update fraud alert status');
+      console.error('Update fraud alert error:', error);
+    }
   };
 
   const formatDate = (timestamp) => {

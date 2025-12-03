@@ -1,178 +1,249 @@
-import React, { useMemo, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+// screens/SendMoneyScreen.js
+import React, { useEffect, useState } from 'react';
+import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Alert, StyleSheet, Platform } from 'react-native';
 import { useAppContext } from '../context/AppContext';
-import { validateAmount } from '../utils/validation';
 import AppScreen from '../components/AppScreen';
 
 const SendMoneyScreen = () => {
-  const { balance, sendMoney, fxRates, transferFeePercent, formatCurrency } = useAppContext();
-  const [recipient, setRecipient] = useState('');
+  const {
+    loadBeneficiaries,
+    createTransfer,
+    user,
+    balance,
+  } = useAppContext();
+
+  const [beneficiaries, setBeneficiaries] = useState([]);
+  const [selectedBeneficiaryId, setSelectedBeneficiaryId] = useState(null);
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [currency, setCurrency] = useState('USD');
-  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  const currencies = Object.keys(fxRates);
-
-  const breakdown = useMemo(() => {
-    if (!validateAmount(amount)) {
-      return { converted: 0, fee: 0, total: 0 };
-    }
-    const rate = fxRates[currency] ?? 1;
-    const converted = Number(amount) * rate;
-    const fee = converted * transferFeePercent;
-    return {
-      converted,
-      fee,
-      total: converted + fee,
-      rate,
+  useEffect(() => {
+    const fetchBens = async () => {
+      try {
+        const list = await loadBeneficiaries();
+        setBeneficiaries(list);
+        if (list.length > 0) {
+          setSelectedBeneficiaryId(list[0].id);
+        }
+      } catch (e) {
+        console.log('Failed to load beneficiaries in SendMoneyScreen', e.message);
+      }
     };
-  }, [amount, currency, fxRates, transferFeePercent]);
 
-  const canSubmit = useMemo(() => {
-    if (!recipient.trim()) return false;
-    if (!validateAmount(amount)) return false;
-    return breakdown.total > 0 && breakdown.total <= balance;
-  }, [amount, balance, breakdown.total, recipient]);
+    fetchBens();
+  }, []);
 
-  const handleSubmit = () => {
+  const handleSend = async () => {
+    if (!selectedBeneficiaryId) {
+      Alert.alert('Select beneficiary', 'Please choose a beneficiary.');
+      return;
+    }
+
+    const numericAmount = Number(amount);
+    if (Number.isNaN(numericAmount) || numericAmount <= 0) {
+      Alert.alert('Invalid amount', 'Please enter a valid amount.');
+      return;
+    }
+
+    if (numericAmount > (balance || 0)) {
+      Alert.alert('Insufficient balance', 'You do not have enough funds.');
+      return;
+    }
+
     try {
-      const transaction = sendMoney({ counterpart: recipient, amount, note, currency });
-      setSummary(transaction);
-      setRecipient('');
-      setAmount('');
-      setNote('');
-      setCurrency('USD');
+      setLoading(true);
+
+      const payload = {
+        amount: numericAmount,
+        currency,
+        beneficiary_id: selectedBeneficiaryId,
+        note: note.trim(),
+      };
+
+      const result = await createTransfer(payload);
+
       Alert.alert(
-        'Transfer complete',
-        `You sent ${formatCurrency(transaction.amount, transaction.currency || 'USD')} to ${transaction.counterpart}.`,
+        'Transfer Successful',
+        `You sent ${currency} ${numericAmount.toFixed(2)} successfully!`,
+        [{ text: 'OK', onPress: () => {
+          setAmount('');
+          setNote('');
+        }}]
       );
-    } catch (error) {
-      Alert.alert('Transfer failed', error.message);
+    } catch (e) {
+      console.log('createTransfer error', e.message);
+      Alert.alert('Error', e.message || 'Failed to create transfer.');
+    } finally {
+      setLoading(false);
     }
   };
 
+  const selectedBeneficiary = beneficiaries.find(b => b.id === selectedBeneficiaryId);
+  const numericAmount = Number(amount) || 0;
+  const fee = numericAmount * 0.0125;
+  const totalAmount = numericAmount + fee;
+  const canSend = selectedBeneficiaryId && numericAmount > 0 && totalAmount <= (balance || 0);
+
   return (
     <AppScreen scrollable contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Send Money</Text>
-        <Text style={styles.subtitle}>Current balance: ${balance.toLocaleString()}</Text>
-        <View style={styles.securityBanner}>
-          <Text style={styles.securityTitle}>Protected transfer</Text>
-          <Text style={styles.securityText}>
-            Sensitive details are validated and encrypted before posting. Choose a currency to view FX and fees instantly.
-          </Text>
-        </View>
+      <Text style={styles.title}>Send Money</Text>
+      <Text style={styles.subtitle}>Transfer funds to your beneficiaries</Text>
 
-        <View style={styles.currencySelector}>
-          {currencies.map((code) => (
-            <TouchableOpacity
-              key={code}
-              style={[styles.currencyChip, currency === code && styles.currencyChipActive]}
-              onPress={() => setCurrency(code)}
-            >
-              <Text style={[styles.currencyChipText, currency === code && styles.currencyChipTextActive]}>{code}</Text>
-            </TouchableOpacity>
-          ))}
+      {beneficiaries.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyText}>No beneficiaries yet</Text>
+          <Text style={styles.emptySubtext}>Add a beneficiary first to send money</Text>
         </View>
-        <View style={styles.securityBanner}>
-          <Text style={styles.securityTitle}>Protected transfer</Text>
-          <Text style={styles.securityText}>Sensitive details are validated and encrypted before posting.</Text>
-        </View>
-
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>Recipient ID / Phone / Email</Text>
-          <TextInput
-            placeholder="e.g. jamie.lee@example.com"
-            style={styles.input}
-            value={recipient}
-            onChangeText={setRecipient}
-            autoCapitalize="none"
-          />
-        </View>
-
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>Amount</Text>
-          <TextInput
-            placeholder="0.00"
-            style={styles.input}
-            value={amount}
-            onChangeText={setAmount}
-            keyboardType="decimal-pad"
-          />
-          <Text style={styles.helpText}>Transfers above your balance are blocked automatically.</Text>
-        </View>
-
-        <View style={styles.formGroup}>
-          <Text style={styles.label}>Message (optional)</Text>
-          <TextInput
-            placeholder="Add a quick note"
-            style={[styles.input, styles.multiline]}
-            value={note}
-            onChangeText={setNote}
-            multiline
-            numberOfLines={3}
-          />
-        </View>
-
-        <View style={styles.breakdownCard}>
-          <Text style={styles.breakdownTitle}>Transfer summary</Text>
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Amount</Text>
-            <Text style={styles.breakdownValue}>{formatCurrency(Number(amount) || 0, currency)}</Text>
+      ) : (
+        <>
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Select Beneficiary</Text>
+            <View style={styles.beneficiarySelector}>
+              {beneficiaries.map((ben) => (
+                <TouchableOpacity
+                  key={ben.id}
+                  style={[
+                    styles.beneficiaryChip,
+                    selectedBeneficiaryId === ben.id && styles.beneficiaryChipActive,
+                  ]}
+                  onPress={() => setSelectedBeneficiaryId(ben.id)}
+                >
+                  <Text
+                    style={[
+                      styles.beneficiaryChipText,
+                      selectedBeneficiaryId === ben.id && styles.beneficiaryChipTextActive,
+                    ]}
+                  >
+                    {ben.name} - {ben.country}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Exchange rate</Text>
-            <Text style={styles.breakdownValue}>
-              1 {currency} ≈ {formatCurrency(fxRates[currency] ?? 1, 'USD')}
-            </Text>
-          </View>
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Converted (USD)</Text>
-            <Text style={styles.breakdownValue}>{formatCurrency(breakdown.converted, 'USD')}</Text>
-          </View>
-          <View style={styles.breakdownRow}>
-            <Text style={styles.breakdownLabel}>Fee ({(transferFeePercent * 100).toFixed(2)}%)</Text>
-            <Text style={styles.breakdownValue}>{formatCurrency(breakdown.fee, 'USD')}</Text>
-          </View>
-          <View style={[styles.breakdownRow, styles.breakdownTotal]}>
-            <Text style={styles.breakdownLabel}>Total debit</Text>
-            <Text style={styles.breakdownValue}>{formatCurrency(breakdown.total, 'USD')}</Text>
-          </View>
-        </View>
 
-        <TouchableOpacity
-          style={[styles.submitButton, !canSubmit && styles.submitButtonDisabled]}
-          disabled={!canSubmit}
-          onPress={handleSubmit}
-        >
-          <Text style={styles.submitText}>Confirm transfer</Text>
-        </TouchableOpacity>
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Amount ({currency})</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="0.00"
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="decimal-pad"
+            />
+          </View>
 
-        {summary && (
-          <View style={styles.summaryCard}>
-            <Text style={styles.summaryTitle}>Most recent transfer</Text>
-            <Text style={styles.summaryValue}>{formatCurrency(summary.amount, summary.currency || 'USD')}</Text>
-            <Text style={styles.summaryMeta}>Recipient: {summary.counterpart}</Text>
-            {summary.note ? <Text style={styles.summaryMeta}>Message: {summary.note}</Text> : null}
-            {summary.currency && (
-              <Text style={styles.summaryMeta}>
-                FX rate: 1 {summary.currency} ≈ {formatCurrency(summary.fxRate || 1, 'USD')}
-              </Text>
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Note (optional)</Text>
+            <TextInput
+              style={[styles.input, styles.multiline]}
+              placeholder="Add a note for this transfer"
+              value={note}
+              onChangeText={setNote}
+              multiline
+              numberOfLines={3}
+            />
+          </View>
+
+          {numericAmount > 0 && (
+            <View style={styles.breakdownCard}>
+              <Text style={styles.breakdownTitle}>Transfer Summary</Text>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Amount</Text>
+                <Text style={styles.breakdownValue}>{currency} {numericAmount.toFixed(2)}</Text>
+              </View>
+              <View style={styles.breakdownRow}>
+                <Text style={styles.breakdownLabel}>Fee (1.25%)</Text>
+                <Text style={styles.breakdownValue}>{currency} {fee.toFixed(2)}</Text>
+              </View>
+              <View style={[styles.breakdownRow, styles.breakdownTotal]}>
+                <Text style={[styles.breakdownLabel, { fontWeight: '700' }]}>Total</Text>
+                <Text style={[styles.breakdownValue, { fontWeight: '700' }]}>
+                  {currency} {totalAmount.toFixed(2)}
+                </Text>
+              </View>
+              {totalAmount > (balance || 0) && (
+                <Text style={styles.insufficientText}>Insufficient balance</Text>
+              )}
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={[styles.submitButton, (!canSend || loading) && styles.submitButtonDisabled]}
+            onPress={handleSend}
+            disabled={!canSend || loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.submitText}>Send Money</Text>
             )}
-            <Text style={styles.summaryMeta}>
-              Security token: {summary.encryptedPayload.slice(0, 16)}
-              ...
-            </Text>
-          </View>
-        )}
+          </TouchableOpacity>
+        </>
+      )}
     </AppScreen>
   );
 };
 
+
+
 const styles = StyleSheet.create({
   container: { paddingBottom: 40 },
   title: { fontSize: 28, fontWeight: '700', marginBottom: 6, color: '#101828' },
-  subtitle: { fontSize: 16, color: '#475467', marginBottom: 12 },
+  subtitle: { fontSize: 16, color: '#475467', marginBottom: 20 },
+  emptyState: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 40,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#e4e7ec',
+    marginTop: 20,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#94a3b8',
+  },
+  beneficiarySelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 8,
+  },
+  beneficiaryChip: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#d0d5dd',
+    marginRight: 8,
+    marginBottom: 8,
+    backgroundColor: '#fff',
+  },
+  beneficiaryChipActive: {
+    backgroundColor: '#4A90E2',
+    borderColor: '#4A90E2',
+  },
+  beneficiaryChipText: {
+    color: '#475467',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  beneficiaryChipTextActive: {
+    color: '#fff',
+  },
+  insufficientText: {
+    color: '#ef4444',
+    fontSize: 12,
+    marginTop: 8,
+    fontWeight: '600',
+  },
   securityBanner: {
     backgroundColor: '#ecfeff',
     borderRadius: 12,
@@ -237,11 +308,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 16,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
+    ...(Platform.OS === 'web' ? {
+      boxShadow: '0 3px 8px rgba(0, 0, 0, 0.1)',
+    } : {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 3 },
+      shadowOpacity: 0.1,
+      shadowRadius: 8,
+      elevation: 4,
+    }),
   },
   summaryTitle: { fontSize: 16, fontWeight: '600', color: '#475467' },
   summaryValue: { fontSize: 30, fontWeight: '700', marginVertical: 10, color: '#101828' },
