@@ -19,9 +19,7 @@ const Home = () => {
       }
 
       try {
-        // Load transactions from JSON storage
         const userTx = await fetchUserTransactions();
-        // Get most recent 5 transactions
         const recent = userTx
           .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
           .slice(0, 5);
