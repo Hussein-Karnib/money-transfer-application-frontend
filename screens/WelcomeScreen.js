@@ -1,10 +1,14 @@
 import React from 'react';
-import { Image, ImageBackground, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View, RefreshControl } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useNavigation } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useAppContext } from '../context/AppContext';
 
 const WelcomeScreen = () => {
   const navigation = useNavigation();
+  const insets = useSafeAreaInsets();
+  const { refreshAppData, refreshing } = useAppContext();
 
   const handleGetStarted = () => {
     navigation.navigate('Auth');
@@ -13,28 +17,45 @@ const WelcomeScreen = () => {
   return (
     <ImageBackground source={require('../assets/background.png')} style={styles.background}>
       <LinearGradient colors={['rgba(10,25,47,0.75)', 'rgba(10,25,47,0.85)']} style={styles.overlay}>
-        <SafeAreaView style={styles.container}>
-          <View style={styles.logoContainer}>
-            <Image source={require('../assets/icon.png')} style={styles.logo} />
-            <Text style={styles.title}>SwiftSend</Text>
-            <Text style={styles.subtitle}>Fast. Secure. Mobile-first money transfers.</Text>
-          </View>
+        <SafeAreaView
+          style={[
+            styles.container,
+            { paddingTop: insets.top, paddingBottom: insets.bottom },
+          ]}
+        >
+          <ScrollView
+            contentContainerStyle={styles.content}
+            refreshControl={
+              <RefreshControl
+                refreshing={!!refreshing}
+                onRefresh={refreshAppData}
+                tintColor="#fff"
+                colors={['#ffffff']}
+              />
+            }
+          >
+            <View style={styles.logoContainer}>
+              <Image source={require('../assets/icon.png')} style={styles.logo} />
+              <Text style={styles.title}>SwiftSend</Text>
+              <Text style={styles.subtitle}>Fast. Secure. Mobile-first money transfers.</Text>
+            </View>
 
-          <View style={styles.callout}>
-            <Text style={styles.calloutTitle}>Why SwiftSend?</Text>
-            <Text style={styles.calloutText}>• Instant peer-to-peer transfers</Text>
-            <Text style={styles.calloutText}>• Built-in support and education</Text>
-            <Text style={styles.calloutText}>• Data validation & encrypted payloads</Text>
-          </View>
+            <View style={styles.callout}>
+              <Text style={styles.calloutTitle}>Why SwiftSend?</Text>
+              <Text style={styles.calloutText}>• Instant peer-to-peer transfers</Text>
+              <Text style={styles.calloutText}>• Built-in support and education</Text>
+              <Text style={styles.calloutText}>• Data validation & encrypted payloads</Text>
+            </View>
 
-          <View style={styles.actions}>
-            <TouchableOpacity style={styles.primaryButton} onPress={handleGetStarted}>
-              <Text style={styles.primaryButtonText}>Log in / Sign up</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryButton} onPress={() => navigation.navigate('Main')}>
-              <Text style={styles.secondaryButtonText}>Explore dashboard</Text>
-            </TouchableOpacity>
-          </View>
+            <View style={styles.actions}>
+              <TouchableOpacity style={styles.primaryButton} onPress={handleGetStarted}>
+                <Text style={styles.primaryButtonText}>Log in / Sign up</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.secondaryButton} onPress={() => navigation.navigate('Main')}>
+                <Text style={styles.secondaryButtonText}>Explore dashboard</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         </SafeAreaView>
       </LinearGradient>
     </ImageBackground>
@@ -47,6 +68,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     paddingHorizontal: 24,
+    justifyContent: 'space-between',
+  },
+  content: {
+    flexGrow: 1,
     justifyContent: 'space-between',
   },
   logoContainer: { alignItems: 'center', marginTop: 40 },

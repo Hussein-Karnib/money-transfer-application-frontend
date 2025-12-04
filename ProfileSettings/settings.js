@@ -9,6 +9,7 @@ import {
   Alert,
   Modal,
   Dimensions,
+  RefreshControl,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,11 +18,10 @@ import { faCirclePlus } from '@fortawesome/free-solid-svg-icons';
 import Bar from '../MoreStuff/bar';
 import { useAppContext, ROLE_CONFIG } from '../context/AppContext';
 import { useNavigation, CommonActions } from '@react-navigation/native';
-import { navigationRef } from '../App';
 
 export default function Settings() {
   const [modalVisible, setModalVisible] = useState(false);
-  const { user, role, switchRole, signOut } = useAppContext();
+  const { user, role, switchRole, signOut, refreshAppData, refreshing } = useAppContext();
   const [profileImage, setProfileImage] = useState(null);
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
@@ -96,50 +96,48 @@ export default function Settings() {
         style: 'destructive',
         onPress: async () => {
           try {
-            // Sign out and clear state first
             await signOut();
           } catch (error) {
             console.error('Logout error:', error);
           }
-          
-          // Navigate to Auth screen using the navigation ref
-          if (navigationRef.current) {
-            try {
-              navigationRef.current.reset({
-                index: 0,
-                routes: [{ name: 'Auth' }],
-              });
-            } catch (navError) {
-              console.error('Navigation reset error:', navError);
-              // Fallback: try navigate
-              try {
-                navigationRef.current.navigate('Auth');
-              } catch (fallbackError) {
-                console.error('Navigation navigate error:', fallbackError);
-              }
-            }
-          } else {
-            // Fallback: use local navigation
-            try {
-              const rootNav = navigation.getParent() || navigation;
-              rootNav.reset({
-                index: 0,
-                routes: [{ name: 'Auth' }],
-              });
-            } catch (fallbackError) {
-              console.error('Fallback navigation error:', fallbackError);
-            }
+
+          try {
+            const resetAction = CommonActions.reset({
+              index: 0,
+              routes: [{ name: 'Auth' }],
+            });
+            const rootNav = navigation.getParent() || navigation;
+            rootNav.dispatch(resetAction);
+          } catch (navError) {
+            console.error('Navigation reset error:', navError);
           }
         },
       },
     ]);
   };
 
+  const safeUser = user || {
+    name: 'Guest user',
+    id: 'N/A',
+    email: 'Not available',
+    phone: 'Not available',
+  };
+
   return (
     <SafeAreaView
       style={[styles.screen, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
     >
-      <ScrollView contentContainerStyle={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={
+          <RefreshControl
+            refreshing={!!refreshing}
+            onRefresh={refreshAppData}
+            colors={['#4A90E2']}
+            tintColor="#4A90E2"
+          />
+        }
+      >
         <View style={styles.profileRow}>
           <View style={styles.profileContainer}>
             <TouchableOpacity onPress={() => setModalVisible(true)}>
@@ -158,17 +156,17 @@ export default function Settings() {
           </View>
 
           <View style={styles.infoContainer}>
-            <Text style={styles.nameText}>{user.name}</Text>
+            <Text style={styles.nameText}>{safeUser.name}</Text>
             <Text style={styles.birthText}>
-              Account ID: {user.id}
+              Account ID: {safeUser.id}
             </Text>
-            {user.birthYear ? (
+            {safeUser.birthYear ? (
               <Text style={styles.birthText}>
-                Birth year: {user.birthYear} ({calculateAge(user.birthYear)} yrs)
+                Birth year: {safeUser.birthYear} ({calculateAge(safeUser.birthYear)} yrs)
               </Text>
             ) : null}
-            <Text style={styles.contactText}>{user.email}</Text>
-            <Text style={styles.contactText}>{user.phone}</Text>
+            <Text style={styles.contactText}>{safeUser.email}</Text>
+            <Text style={styles.contactText}>{safeUser.phone}</Text>
           </View>
         </View>
 

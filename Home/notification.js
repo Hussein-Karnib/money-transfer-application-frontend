@@ -1,18 +1,39 @@
 import React from 'react';
-import { View, Text, StyleSheet, ScrollView } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, StyleSheet, ScrollView, RefreshControl } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppContext } from '../context/AppContext';
 import Header from './header';
 import Bar from '../MoreStuff/bar';
 
 const Notifications = () => {
-  const { notifications } = useAppContext();
+  const { notifications, refreshAppData, refreshing } = useAppContext();
   const image = require('../assets/profile.png');
+  const insets = useSafeAreaInsets();
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView
+      style={[
+        styles.container,
+        {
+          paddingTop: insets.top,
+          paddingBottom: insets.bottom,
+          paddingLeft: insets.left,
+          paddingRight: insets.right,
+        },
+      ]}
+    >
       <Header image={image} transaction={notifications.length} />
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={!!refreshing}
+            onRefresh={refreshAppData}
+            colors={['#4A90E2']}
+            tintColor="#4A90E2"
+          />
+        }
+      >
         <Text style={styles.title}>Notifications</Text>
         {notifications.map((note, index) => (
           <View key={index} style={styles.notificationCard}>

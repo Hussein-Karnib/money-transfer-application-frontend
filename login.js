@@ -5,17 +5,18 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   ImageBackground,
   Image,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { useAppContext, ROLE_CONFIG } from './context/AppContext';
 import { validateEmail, validatePhone } from './utils/validation';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const MODE = {
   LOGIN: 'login',
@@ -31,9 +32,10 @@ const LoginScreen = () => {
   const [mode, setMode] = useState(MODE.LOGIN);
   const [selectedRole, setSelectedRole] = useState('user');
   const navigation = useNavigation();
-  const { login, registerAndLogin, switchRole } = useAppContext();
+  const { login, registerAndLogin, switchRole, refreshAppData, refreshing } = useAppContext();
   const roleKeys = useMemo(() => Object.keys(ROLE_CONFIG), []);
   const [loading, setLoading] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const formValid = useMemo(() => {
     if (mode === MODE.LOGIN) {
@@ -121,9 +123,25 @@ const LoginScreen = () => {
 
   return (
     <ImageBackground source={require('./assets/background.png')} style={styles.backgroundImage} resizeMode="cover">
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView
+        style={[
+          styles.container,
+          { paddingTop: insets.top, paddingBottom: insets.bottom },
+        ]}
+      >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardView}>
-          <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={!!refreshing}
+                onRefresh={refreshAppData}
+                tintColor="#fff"
+                colors={['#ffffff']}
+              />
+            }
+          >
             <View style={styles.logoArea}>
               <Image source={require('./assets/icon.png')} style={styles.logo} />
               <Text style={styles.appTitle}>SwiftSend</Text>

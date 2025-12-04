@@ -58,6 +58,7 @@ export const AppProvider = ({ children }) => {
   const [fraudAlerts, setFraudAlerts] = useState([]);
   const [agents, setAgents] = useState([]);
   const [balance, setBalance] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   // 🔹 Keep axios Authorization header in sync
   useEffect(() => {
@@ -597,6 +598,40 @@ export const AppProvider = ({ children }) => {
     setUser(fakeUser);
   };
 
+  const refreshAppData = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      if (user?.id) {
+        const latestUser = await getUserById(user.id);
+        if (latestUser) {
+          setUser(latestUser);
+          setBalance(latestUser.balance || 0);
+        }
+        await Promise.all([fetchUserTransactions(), loadBeneficiaries()]);
+      }
+
+      const [allTickets, allKyc, allFraud, allAgents, allNotifications] = await Promise.all([
+        getDataSection('supportTickets').catch(() => []),
+        getDataSection('kycSubmissions').catch(() => []),
+        getDataSection('fraudAlerts').catch(() => []),
+        getDataSection('agents').catch(() => []),
+        getDataSection('notifications').catch(() => []),
+      ]);
+
+      if (allTickets) setSupportTickets(allTickets);
+      if (allKyc) setKycSubmissions(allKyc);
+      if (allFraud) setFraudAlerts(allFraud);
+      if (allAgents) setAgents(allAgents);
+      if (allNotifications?.length) {
+        setNotifications(allNotifications);
+      }
+    } catch (error) {
+      console.error('App refresh error:', error);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [user?.id, fetchUserTransactions, loadBeneficiaries]);
+
   const value = useMemo(
     () => ({
       user,
@@ -633,6 +668,8 @@ export const AppProvider = ({ children }) => {
       requestMoney,
       formatCurrency,
       generateReport,
+      refreshAppData,
+      refreshing,
       // legacy
       signIn,
       API_BASE_URL,
@@ -662,6 +699,8 @@ export const AppProvider = ({ children }) => {
       requestMoney,
       formatCurrency,
       generateReport,
+      refreshAppData,
+      refreshing,
     ]
   );
 
