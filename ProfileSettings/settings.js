@@ -17,14 +17,13 @@ import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCirclePlus } from '@fortawesome/free-solid-svg-icons';
 import Bar from '../MoreStuff/bar';
 import { useAppContext, ROLE_CONFIG } from '../context/AppContext';
-import { useNavigation, CommonActions } from '@react-navigation/native';
+import { resetToAuth } from '../navigation/navigationRef';
 
 export default function Settings() {
   const [modalVisible, setModalVisible] = useState(false);
   const { user, role, switchRole, signOut, refreshAppData, refreshing } = useAppContext();
   const [profileImage, setProfileImage] = useState(null);
   const insets = useSafeAreaInsets();
-  const navigation = useNavigation();
 
   // Request permission
   const requestPermission = async (mode) => {
@@ -101,16 +100,7 @@ export default function Settings() {
             console.error('Logout error:', error);
           }
 
-          try {
-            const resetAction = CommonActions.reset({
-              index: 0,
-              routes: [{ name: 'Auth' }],
-            });
-            const rootNav = navigation.getParent() || navigation;
-            rootNav.dispatch(resetAction);
-          } catch (navError) {
-            console.error('Navigation reset error:', navError);
-          }
+          resetToAuth();
         },
       },
     ]);

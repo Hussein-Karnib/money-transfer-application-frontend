@@ -25,6 +25,7 @@ import {
   getDataSection,
   findItemInSection,
 } from '../utils/jsonStorage';
+import { navigationRef, navigateIfNeeded } from '../navigation/navigationRef';
 
 const API_BASE_URL = 'http://192.168.10.175:8000/api';
 
@@ -599,6 +600,7 @@ export const AppProvider = ({ children }) => {
   };
 
   const refreshAppData = useCallback(async () => {
+    const currentRouteName = navigationRef?.getCurrentRoute?.()?.name;
     setRefreshing(true);
     try {
       if (user?.id) {
@@ -629,6 +631,9 @@ export const AppProvider = ({ children }) => {
       console.error('App refresh error:', error);
     } finally {
       setRefreshing(false);
+      if (currentRouteName) {
+        navigateIfNeeded(currentRouteName);
+      }
     }
   }, [user?.id, fetchUserTransactions, loadBeneficiaries]);
 

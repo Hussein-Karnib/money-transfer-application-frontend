@@ -19,6 +19,7 @@ import AgentMapScreen from './screens/AgentMapScreen';
 import FraudDetectionScreen from './screens/FraudDetectionScreen';
 import ReportsScreen from './screens/ReportsScreen';
 import { AppProvider, useAppContext } from './context/AppContext';
+import { navigationRef } from './navigation/navigationRef';
 
 const Stack = createNativeStackNavigator();
 const Drawer = createDrawerNavigator();
@@ -78,9 +79,6 @@ const RoleAwareDrawer = () => {
     </Drawer.Navigator>
   );
 };
-
-// Navigation ref for global navigation access
-export const navigationRef = React.createRef();
 
 export default function App() {
   return (
