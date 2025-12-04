@@ -12,7 +12,7 @@ const AgentConsoleScreen = () => {
   const [city, setCity] = useState(primaryAgent.city || '');
   const [hours, setHours] = useState(primaryAgent.hours || '');
 
-  // Update form fields when agent data changes
+  
   useEffect(() => {
     if (primaryAgent) {
       setStoreName(primaryAgent.name || '');

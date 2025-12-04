@@ -1,4 +1,3 @@
-// screens/SendMoneyScreen.js
 import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Alert, StyleSheet, Platform } from 'react-native';
 import { useAppContext } from '../context/AppContext';

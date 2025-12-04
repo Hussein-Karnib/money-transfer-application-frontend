@@ -1,5 +1,3 @@
-// Home/home.js
-
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import { useAppContext } from '../context/AppContext';

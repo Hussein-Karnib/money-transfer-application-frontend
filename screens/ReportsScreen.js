@@ -79,7 +79,7 @@ const ReportsScreen = () => {
 
   const handleGenerateReport = (reportType) => {
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 30); // Last 30 days
+    startDate.setDate(startDate.getDate() - 30); 
     const endDate = new Date();
 
     const report = generateReport(reportType, startDate.toISOString(), endDate.toISOString());

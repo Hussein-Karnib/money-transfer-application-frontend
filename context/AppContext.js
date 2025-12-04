@@ -1,5 +1,3 @@
-// context/AppContext.js
-
 import React, {
   createContext,
   useContext,
@@ -37,7 +35,7 @@ export const ROLE_CONFIG = {
 
 const AppContext = createContext(null);
 
-// 🔹 Shared axios instance
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 10000,
@@ -61,7 +59,7 @@ export const AppProvider = ({ children }) => {
   const [balance, setBalance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
-  // 🔹 Keep axios Authorization header in sync
+  
   useEffect(() => {
     if (authToken) {
       api.defaults.headers.common.Authorization = `Bearer ${authToken}`;
@@ -70,14 +68,14 @@ export const AppProvider = ({ children }) => {
     }
   }, [authToken]);
 
-  // --- Bootstrap from JSON storage on app start ---
+  
   useEffect(() => {
     const bootstrap = async () => {
       try {
-        // Load data from JSON storage
+        
         const data = await loadData();
         
-        // Load stored auth state
+        
         const storedToken = await AsyncStorage.getItem('authToken');
         const storedRole = await AsyncStorage.getItem('role');
         const storedUserId = await AsyncStorage.getItem('userId');
@@ -86,13 +84,13 @@ export const AppProvider = ({ children }) => {
           setAuthToken(storedToken);
           if (storedRole) setRole(storedRole);
           
-          // Load user from JSON data
+          
           const userData = await getUserById(storedUserId);
           if (userData) {
             setUser(userData);
             setBalance(userData.balance || 0);
             
-            // Load user-specific data
+            
             const userTx = await getUserTransactions(storedUserId);
             setTransactions(userTx);
             
@@ -101,7 +99,7 @@ export const AppProvider = ({ children }) => {
           }
         }
 
-        // Load global data (for admin/agent)
+        
         const allTickets = await getDataSection('supportTickets');
         setSupportTickets(allTickets);
         
@@ -128,17 +126,16 @@ export const AppProvider = ({ children }) => {
     bootstrap();
   }, []);
 
-  // --- Auth functions ---
+  
 
   const login = async (email, password) => {
     try {
-      // Try JSON storage first - find user by email
+      
       const users = await getDataSection('users');
       const userData = users.find((u) => u.email === email);
       
       if (userData) {
-        // For demo: accept any password if email matches
-        // In production, verify password hash
+       
         const token = `token_${Date.now()}_${userData.id}`;
         
         setAuthToken(token);
@@ -150,7 +147,7 @@ export const AppProvider = ({ children }) => {
         await AsyncStorage.setItem('role', userData.role || 'user');
         await AsyncStorage.setItem('userId', userData.id);
 
-        // Load user data
+        
         const userTx = await getUserTransactions(userData.id);
         setTransactions(userTx);
         
@@ -165,7 +162,7 @@ export const AppProvider = ({ children }) => {
         return { success: true, user: userData, token };
       }
 
-      // Fallback to API if JSON storage doesn't have user
+      
       try {
         const res = await api.post('/auth/login', { email, password });
         const token = res.data.token;
@@ -195,13 +192,13 @@ export const AppProvider = ({ children }) => {
 
   const registerAndLogin = async ({ name, email, password, phone }) => {
     try {
-      // Create new user in JSON storage
+      
       const newUser = {
         id: `MT-${Date.now()}`,
         name: name.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        password: password, // In production, hash this
+        password: password, 
         birthYear: new Date().getFullYear() - 25,
         balance: 0,
         role: 'user',
@@ -209,7 +206,7 @@ export const AppProvider = ({ children }) => {
         createdAt: new Date().toISOString(),
       };
 
-      // Add user to JSON storage
+    
       await addToSection('users', newUser);
 
       const token = `token_${Date.now()}_${newUser.id}`;
@@ -241,7 +238,7 @@ export const AppProvider = ({ children }) => {
         try {
           await api.post('/auth/logout');
         } catch (error) {
-          // Ignore API logout errors
+          
         }
       }
     } finally {
@@ -260,7 +257,7 @@ export const AppProvider = ({ children }) => {
     AsyncStorage.setItem('role', newRole).catch(() => {});
   };
 
-  // Format currency helper
+ 
   const formatCurrency = (amount, currency = 'USD') => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -270,7 +267,7 @@ export const AppProvider = ({ children }) => {
     }).format(amount);
   };
 
-  // --- Shared data fetchers using JSON storage ---
+ 
 
   const loadBeneficiaries = useCallback(async () => {
     if (!user?.id) return [];
@@ -288,7 +285,7 @@ export const AppProvider = ({ children }) => {
   const fetchBeneficiaries = loadBeneficiaries;
 
   const fetchUserAccounts = async () => {
-    // Return user's account info from JSON
+    
     if (!user) return [];
     return [{
       id: user.id,
@@ -327,7 +324,7 @@ export const AppProvider = ({ children }) => {
       throw new Error('Invalid amount');
     }
 
-    // Get beneficiary
+    
     const beneficiary = await getUserBeneficiaries(user.id).then(bens => 
       bens.find(b => b.id === beneficiary_id)
     );
@@ -336,12 +333,12 @@ export const AppProvider = ({ children }) => {
       throw new Error('Beneficiary not found');
     }
 
-    // Check balance
+    
     if (numericAmount > (user.balance || 0)) {
       throw new Error('Insufficient balance');
     }
 
-    // Calculate fee (1.25%)
+    
     const fee = numericAmount * 0.0125;
     const totalAmount = numericAmount + fee;
 
@@ -349,7 +346,7 @@ export const AppProvider = ({ children }) => {
       throw new Error('Insufficient balance after fees');
     }
 
-    // Create transaction
+    
     const transaction = {
       id: `TX-${Date.now()}`,
       senderId: user.id,
@@ -365,10 +362,10 @@ export const AppProvider = ({ children }) => {
       timestamp: new Date().toISOString(),
     };
 
-    // Save transaction to JSON
+    
     await addToSection('transactions', transaction);
 
-    // Update user balance
+    
     const updatedUser = await updateItemInSection('users', user.id, {
       balance: (user.balance || 0) - totalAmount,
     });
@@ -378,10 +375,10 @@ export const AppProvider = ({ children }) => {
       setBalance(updatedUser.balance);
     }
 
-    // Refresh transactions
+    
     await fetchUserTransactions();
 
-    // Add notification
+    
     setNotifications((prev) => [
       `You sent ${currency} ${numericAmount.toFixed(2)} to ${beneficiary.name}`,
       ...prev.slice(0, 24),
@@ -433,7 +430,7 @@ export const AppProvider = ({ children }) => {
 
     await addToSection('supportTickets', newTicket);
     
-    // Refresh tickets
+   
     const allTickets = await getDataSection('supportTickets');
     setSupportTickets(allTickets);
 
@@ -446,22 +443,22 @@ export const AppProvider = ({ children }) => {
   }, [user?.id]);
 
   const updateKycStatus = useCallback(async (id, status) => {
-    // Get the KYC submission to find the userId
+    
     const kycSubmission = await findItemInSection('kycSubmissions', id);
     if (!kycSubmission) {
       throw new Error('KYC submission not found');
     }
 
-    // Update the KYC submission status
+    
     const updated = await updateItemInSection('kycSubmissions', id, { status });
     if (updated) {
-      // Update the user's kycStatus in the users array
+      
       if (kycSubmission.userId) {
         const userKycStatus = status === 'Approved' ? 'approved' : status === 'Rejected' ? 'rejected' : 'pending';
         await updateItemInSection('users', kycSubmission.userId, { kycStatus: userKycStatus });
       }
 
-      // Refresh KYC submissions list
+      
       const allKyc = await getDataSection('kycSubmissions');
       setKycSubmissions(allKyc);
     }
@@ -496,7 +493,7 @@ export const AppProvider = ({ children }) => {
       throw new Error('Amount must be greater than zero');
     }
 
-    // Create received transaction
+    
     const transaction = {
       id: `TX-${Date.now()}`,
       senderId: 'SYSTEM',
@@ -512,10 +509,10 @@ export const AppProvider = ({ children }) => {
       timestamp: new Date().toISOString(),
     };
 
-    // Save transaction to JSON
+    
     await addToSection('transactions', transaction);
 
-    // Update user balance
+    
     const updatedUser = await updateItemInSection('users', user.id, {
       balance: (user.balance || 0) + numericAmount,
     });
@@ -525,10 +522,10 @@ export const AppProvider = ({ children }) => {
       setBalance(updatedUser.balance);
     }
 
-    // Refresh transactions
+    
     await fetchUserTransactions();
 
-    // Add notification
+    
     setNotifications((prev) => [
       `You received ${currency} ${numericAmount.toFixed(2)} from ${transaction.counterpart}`,
       ...prev.slice(0, 24),
@@ -549,7 +546,7 @@ export const AppProvider = ({ children }) => {
 
     const requestId = `RQ-${Date.now()}`;
 
-    // Add notification
+   
     setNotifications((prev) => [
       `Money request (${requestId}) sent to ${counterpart.trim()}`,
       ...prev.slice(0, 24),
@@ -558,7 +555,7 @@ export const AppProvider = ({ children }) => {
     return { requestId, counterpart: counterpart.trim(), amount: numericAmount, note: note.trim() };
   }, [user]);
 
-  // Generate report function
+  
   const generateReport = useCallback((reportType, startDate, endDate) => {
     const reportId = `RPT-${Date.now()}`;
     const stats = {
@@ -594,7 +591,7 @@ export const AppProvider = ({ children }) => {
     };
   }, [transactions, kycSubmissions, fraudAlerts, agents, supportTickets]);
 
-  // Legacy
+ 
   const signIn = (fakeUser) => {
     setUser(fakeUser);
   };
@@ -651,14 +648,14 @@ export const AppProvider = ({ children }) => {
       fraudAlerts,
       agents,
       balance,
-      // axios instance, useful in screens:
+      
       api,
-      // auth
+      
       login,
       registerAndLogin,
       signOut,
       switchRole,
-      // data helpers
+      
       fetchBeneficiaries,
       loadBeneficiaries,
       fetchUserAccounts,

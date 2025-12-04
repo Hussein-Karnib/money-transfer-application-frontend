@@ -61,18 +61,18 @@ const LoginScreen = () => {
       setLoading(true);
 
       if (mode === MODE.LOGIN) {
-        // For login, use email from username field
+        
         const loginEmail = username.trim();
         
-        // Call the actual login function
+        
         await login(loginEmail, password);
         
-        // Note: Role comes from user data, but we can override if needed
+        
         if (selectedRole !== 'user') {
           switchRole(selectedRole);
         }
       } else {
-        // For signup, call registerAndLogin
+        
         await registerAndLogin({
           name: fullName.trim(),
           email: email.trim(),
@@ -80,13 +80,13 @@ const LoginScreen = () => {
           phone: phone.trim(),
         });
         
-        // Switch role if needed
+        
         if (selectedRole !== 'user') {
           switchRole(selectedRole);
         }
       }
 
-      // Navigate to main screen on success
+      
       navigation.reset({
         index: 0,
         routes: [{ name: 'Main' }],
